@@ -66,9 +66,20 @@ parameters, bounded memory, no panics on untrusted input).
 - *Weak passphrases.* scrypt slows down guessing but can't save a guessable passphrase. Use
   paired mode or a 5+ word passphrase.
 
+## Lessons from stage 2
+
+- **QR decoders want to give you text, and text breaks binary data.** rxing's `getText()`
+  guesses a character set: 50 bytes of `0xC3` came back as 100 characters. CourierQR reads
+  the byte-mode payload instead (`getRawBytes()` / byte segments), and the encoder forces a
+  single byte-mode segment so there is nothing to guess. Any receiver (including the
+  browser one) must do the same. The frame CRC is the safety net if it doesn't.
+- **Integer module scaling.** Codes are drawn at a whole number of pixels per module and
+  never resampled (`ScaleMode::Center`), so every module on screen is the same size.
+- **Hold frames across refreshes.** The window redraws at 60 Hz but changes codes only at
+  `--fps`, so a camera never catches a code half-drawn.
+
 ## Known follow-ups
 
 - Confirm the core builds for `wasm32-unknown-unknown` (needs `getrandom`'s `wasm_js`
-  backend), and check that the browser's QR decoder returns **raw bytes**. Some JavaScript
-  decoders convert QR byte-mode data to text and mangle it. `rxing` returns raw bytes.
+  backend), and that rxing works in the browser with raw-byte output.
 - Tune the scrypt cost against real phone browser timings.

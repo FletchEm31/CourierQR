@@ -38,9 +38,37 @@ file ◄─ unpack ◄─ age decrypt ◄─ RaptorQ decode ◄─ CRC check ◄
 | Stage | What | State |
 |---|---|---|
 | 1 | `courierqr-core`: pipeline, frame format, simulated-camera tests | ✅ done |
-| 2 | Linux sender: render frames as QR codes in a window | next |
-| 3 | Receiver: offline PWA, core compiled to WASM, camera decode in a Web Worker | planned |
+| 2 | `courierqr` CLI: on-screen sender (1/2/4-code grid), PNG export, decode from images, keygen | ✅ done |
+| 3 | Receiver: offline PWA, core compiled to WASM, camera decode in a Web Worker | next |
 | 4 | Linux webcam receiver (phone → desktop) | planned |
+
+## Quick start (Linux)
+
+```sh
+# needs X11 dev libs for the window: sudo apt install libx11-dev libxkbcommon-dev
+cargo build --release
+B=target/release/courierqr
+
+# Show a file as a 2x2 grid of QR codes (prompts for a passphrase).
+$B send notes.md --grid 4 --qr-version 20 --fps 8
+#   Space = pause · ↑/↓ = faster/slower · Esc/Q = quit
+
+# Paired mode: make a key on the receiving device once, then send to its public key.
+$B keygen -o ~/.config/courierqr/device.key        # prints age1...
+$B send notes.md --to age1...
+
+# No camera yet? Export frames, or decode photos/screenshots/video stills.
+$B export notes.md -o frames/
+$B receive frames/*.png -o ~/Downloads             # any order, gaps are fine
+```
+
+`COURIERQR_PASSPHRASE` skips the prompt for scripting. Received file names are reduced to
+a bare file name, so a sender can't write outside the output folder (`../../.bashrc`
+becomes `.bashrc`).
+
+**Choosing settings:** start with `--qr-version 20 --grid 4 --fps 8` on a laptop screen.
+If the phone struggles, drop to `--grid 1` or a smaller version before you lower the fps.
+Bigger codes carry more data per code but need sharper focus.
 
 ## Build & test
 
@@ -49,9 +77,12 @@ cargo test                 # fast suite
 cargo test --release       # also runs the 12 MB multi-block test
 ```
 
-The test suite simulates the camera as a hostile channel: 40% frame loss, 10% bit-flip
-corruption, duplicates and reordering. It also covers wrong keys, foreign QR codes,
-interleaved transfers, and hostile CRC-valid headers.
+The core tests simulate the camera as a hostile channel: 40% frame loss, 10% bit-flip
+corruption, duplicates and reordering. They also cover wrong keys, foreign QR codes,
+interleaved transfers, and hostile CRC-valid headers. The CLI tests render **real QR
+images**, add blur, contrast loss and noise, decode them with
+[rxing](https://github.com/rxing-core/rxing) (a Rust port of ZXing), and reassemble the
+encrypted file. This covers the whole optical path except the physical camera.
 
 ## Using the core
 
