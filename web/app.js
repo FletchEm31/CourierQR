@@ -468,7 +468,17 @@ function syncSendForm() {
     const perFrame = Math.max(1, workerCapacity(v) - 28);
     const frames = Math.ceil((sendFile.data.length + 250) / perFrame);
     const secs = frames / (fps * grid);
-    $("pickmeta").textContent = `${formatBytes(sendFile.data.length)} · at most ~${frames} codes · ≥${secs < 10 ? secs.toFixed(1) : Math.round(secs)} s of showing (less if it compresses)`;
+    // Real-world pickup is a fraction of the codes shown (webcams: ~1 in 5).
+    const realistic = secs * 4;
+    const human = (t) => (t < 90 ? `${Math.round(t)} s` : t < 5400 ? `${Math.round(t / 60)} min` : `${(t / 3600).toFixed(1)} h`);
+    const big = realistic > 180;
+    $("pickmeta").classList.toggle("warn", big);
+    $("pickmeta").textContent =
+      `${formatBytes(sendFile.data.length)} · up to ${frames} codes · roughly ${human(secs)}–${human(realistic)} to a webcam` +
+      (big ? " (too big for a webcam; this is a notes-and-keys channel)" : "");
+  } else {
+    $("pickmeta").textContent = "";
+    $("pickmeta").classList.remove("warn");
   }
 }
 // QR byte capacities at ECC L (matches cq_qr_capacity)
@@ -479,6 +489,21 @@ $("pick").addEventListener("change", async (e) => {
   if (!f) return;
   sendFile = { name: f.name, data: new Uint8Array(await f.arrayBuffer()) };
   $("pickname").textContent = f.name;
+  $("sendtext").value = "";
+  syncSendForm();
+});
+
+// Typed/pasted text becomes a small .txt file: the sweet spot for this channel.
+$("sendtext").addEventListener("input", () => {
+  const text = $("sendtext").value;
+  if (text.trim()) {
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    sendFile = { name: `note_${stamp}.txt`, data: new TextEncoder().encode(text) };
+    $("pickname").textContent = "Choose a file…";
+    $("pick").value = "";
+  } else if (!$("pick").files?.length) {
+    sendFile = null;
+  }
   syncSendForm();
 });
 for (const id of ["to-device", "to-pass"]) $(id).addEventListener("change", () => { $("to-device").dataset.touched = "1"; syncSendForm(); });

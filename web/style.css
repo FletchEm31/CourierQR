@@ -143,3 +143,10 @@ details label { display: flex; justify-content: space-between; align-items: cent
 }
 .bbar button { background: #f1f2f4; color: #222; border-color: #ddd; padding: .5rem .9rem; }
 .bbar button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+
+#sendtext {
+  width: 100%; font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: .7rem; resize: vertical;
+}
+.or { text-align: center; margin: .5rem 0; }
+#pickmeta.warn { color: #ffb84d; }
