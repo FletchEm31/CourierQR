@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Nothing but this origin, ever. The app never needs the network after
+       it's installed; this makes sure it *can't* quietly use it either. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#0d0f12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>CourierQR</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <span class="mark" aria-hidden="true"></span>
+    <h1>CourierQR</h1>
+    <span id="net" class="pill" title="This app makes no network requests while receiving">offline-safe</span>
+  </header>
+
+  <!-- 1. Scanning -->
+  <section id="scan" class="view">
+    <div class="viewport">
+      <video id="video" playsinline muted autoplay></video>
+      <div class="frame" aria-hidden="true"></div>
+      <div id="idle" class="idle">
+        <p>Point your camera at the CourierQR window.<br>Order doesn't matter, and missed frames are fine.</p>
+        <button id="start" class="primary">Start camera</button>
+      </div>
+    </div>
+
+    <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="meter">
+      <div id="bar"></div>
+    </div>
+    <div class="stats">
+      <span id="pieces">waiting for codes…</span>
+      <span id="rate"></span>
+    </div>
+
+    <div class="controls">
+      <select id="camera" aria-label="Camera" hidden></select>
+      <button id="stop" hidden>Stop</button>
+    </div>
+  </section>
+
+  <!-- 2. Unlock -->
+  <section id="unlock" class="view" hidden>
+    <h2>Got everything 🎉</h2>
+    <p class="muted" id="unlock-sub">The file is still encrypted. Unlock it on this device.</p>
+
+    <form id="pass-form" autocomplete="off">
+      <label for="pass">Passphrase</label>
+      <input id="pass" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go" required>
+      <button class="primary" type="submit" id="unlock-btn">Unlock</button>
+    </form>
+
+    <details>
+      <summary>Sent to a device key instead?</summary>
+      <label class="file-btn">
+        Choose identity file…
+        <input id="identity" type="file" accept=".key,.txt,text/plain">
+      </label>
+    </details>
+
+    <p id="unlock-err" class="error" role="alert" hidden></p>
+    <button id="discard" class="link">Discard and scan again</button>
+  </section>
+
+  <!-- 3. Received -->
+  <section id="done" class="view" hidden>
+    <h2 id="fname"></h2>
+    <p class="muted" id="fmeta"></p>
+    <pre id="preview" hidden></pre>
+    <div class="actions">
+      <button id="save" class="primary">Save file</button>
+      <button id="share" hidden>Share…</button>
+      <button id="copy" hidden>Copy text</button>
+    </div>
+    <button id="again" class="link">Receive another</button>
+  </section>
+
+  <footer>
+    Everything happens on this device. Nothing is uploaded, and the camera feed never leaves the page.
+  </footer>
+</body>
+</html>

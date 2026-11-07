@@ -78,8 +78,51 @@ parameters, bounded memory, no panics on untrusted input).
 - **Hold frames across refreshes.** The window redraws at 60 Hz but changes codes only at
   `--fps`, so a camera never catches a code half-drawn.
 
+## Browser receiver (stage 3)
+
+```
+camera ─► <video> ─► createImageBitmap ─► Web Worker ─► OffscreenCanvas ─► grayscale
+                                                └─► courierqr.wasm: QR detect ─► frames ─► RaptorQ ─► age
+```
+
+- **One Rust core, two targets.** `crates/courierqr-wasm` wraps the same `courierqr-core`
+  the CLI uses, plus rxing's QR detector, behind about 20 plain `extern "C"` functions. There
+  is no wasm-bindgen, so the build needs only `cargo`, and `web/courierqr.js` (the whole JS
+  glue) is about 150 lines. The module imports exactly one function, `env.host_random`,
+  which is backed by `crypto.getRandomValues` (getrandom's `custom` backend).
+- **Lesson: no clock on `wasm32-unknown-unknown`.** rxing's high-level readers stamp every
+  result with `chrono::Utc::now()`, which calls `SystemTime::now()` and panics in the
+  browser. The scanner drives rxing's `MultiDetector`, `Detector` and
+  `decode_bitmatrix_with_hints` directly. It never builds a timestamped result, and it gets
+  the byte segments without any charset guessing.
+- **Backpressure, not a queue.** The page sends a new camera frame only when the worker
+  reports back, so slow phones skip frames instead of building lag. Frames are downscaled to
+  1280 px on the long side before detection.
+- **Offline and locked down.** A cache-first service worker means the installed app never
+  re-fetches its code on its own; CI stamps the cache version with the commit SHA, so a new
+  deploy is a new, explicit version. The CSP is `default-src 'none'` plus same-origin script,
+  `wasm-unsafe-eval`, and nothing else.
+
+### What the camera tests showed
+
+Synthetic phone-camera footage of the sender (keystone, ±3° rotation, Gaussian blur, 72%
+contrast, noise), 1280×720, run through the actual decoder (`examples/scanbench.rs`):
+
+| Sender setting | Frames with a read | Codes/frame | ≈ bytes/frame |
+|---|---|---|---|
+| 1 × v20 | 94% | 0.94 | 775 |
+| 1 × v25 | 86% | 0.86 | 1,070 |
+| **2×2 × v15** | **100%** | **3.56** | **1,740** |
+| 2×2 × v20 | 22% | 0.31 | 255 |
+
+Detection collapses once a QR module is only about 3 blurred pixels wide. Different
+detection strategies barely moved the numbers (19% → 21% at 2× the cost); module size is
+what matters. That's why the defaults are now 2×2 × v15.
+
 ## Known follow-ups
 
-- Confirm the core builds for `wasm32-unknown-unknown` (needs `getrandom`'s `wasm_js`
-  backend), and that rxing works in the browser with raw-byte output.
+- Paired-key mode in the phone app is import-only (load an identity file). Next: generate
+  the keypair on the phone and show its public key as a QR code for the sender.
+- Real-phone tuning (iOS Safari focus behaviour, frame rates). The synthetic tests are a
+  floor, not a promise.
 - Tune the scrypt cost against real phone browser timings.

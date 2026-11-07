@@ -1,0 +1,54 @@
+# Test everything, build the browser receiver, and publish web/ to GitHub Pages.
+# One-time setup: repo Settings → Pages → Source: "GitHub Actions".
+name: Test & deploy receiver
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup target add wasm32-unknown-unknown
+          sudo apt-get update -qq && sudo apt-get install -y -qq libx11-dev libxkbcommon-dev
+
+      - name: Test
+        run: cargo test --workspace --release
+
+      - name: Build receiver (wasm)
+        run: ./web/build.sh
+
+      - name: Stamp service-worker cache version
+        # A new sw.js is what makes installed copies pick up the new app.
+        run: sed -i "s/courierqr-v1/courierqr-${GITHUB_SHA::12}/" web/sw.js
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

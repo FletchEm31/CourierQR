@@ -39,7 +39,7 @@ file ◄─ unpack ◄─ age decrypt ◄─ RaptorQ decode ◄─ CRC check ◄
 |---|---|---|
 | 1 | `courierqr-core`: pipeline, frame format, simulated-camera tests | ✅ done |
 | 2 | `courierqr` CLI: on-screen sender (1/2/4-code grid), PNG export, decode from images, keygen | ✅ done |
-| 3 | Receiver: offline PWA, core compiled to WASM, camera decode in a Web Worker | next |
+| 3 | Phone receiver: offline web app (PWA), the same Rust core compiled to WebAssembly | ✅ done |
 | 4 | Linux webcam receiver (phone → desktop) | planned |
 
 ## Quick start (Linux)
@@ -50,8 +50,8 @@ cargo build --release
 B=target/release/courierqr
 
 # Show a file as a 2x2 grid of QR codes (prompts for a passphrase).
-$B send notes.md --grid 4 --qr-version 20 --fps 8
-#   Space = pause · ↑/↓ = faster/slower · Esc/Q = quit
+$B send notes.md
+#   Space = pause · ↑/↓ = faster/slower · Esc/Q = quit (progress also prints in the terminal)
 
 # Paired mode: make a key on the receiving device once, then send to its public key.
 $B keygen -o ~/.config/courierqr/device.key        # prints age1...
@@ -66,15 +66,43 @@ $B receive frames/*.png -o ~/Downloads             # any order, gaps are fine
 a bare file name, so a sender can't write outside the output folder (`../../.bashrc`
 becomes `.bashrc`).
 
-**Choosing settings:** start with `--qr-version 20 --grid 4 --fps 8` on a laptop screen.
-If the phone struggles, drop to `--grid 1` or a smaller version before you lower the fps.
-Bigger codes carry more data per code but need sharper focus.
+**Choosing settings:** the defaults (`--grid 4 --qr-version 15 --fps 8`) came out of
+camera tests. A 2×2 grid of v15 codes was read in 100% of blurry, tilted camera frames,
+while v20 codes at the same screen size dropped to 22%. More, smaller codes beat fewer,
+bigger ones. If your phone struggles, lower `--fps` first, then try `--qr-version 12`.
+
+## Phone receiver
+
+The receiver is a web app with no install and no account. It works offline once loaded,
+and nothing leaves the phone.
+
+1. **Host it once.** Push to GitHub, then go to repo **Settings → Pages → Source: GitHub
+   Actions**. The workflow in `.github/workflows/` runs the tests, builds the WebAssembly,
+   and publishes `web/` to `https://<you>.github.io/CourierQR/`. Phones need HTTPS for the
+   camera, and Pages provides it.
+2. **Open it on your phone** and add it to your home screen (Share → Add to Home Screen on
+   iOS, ⋮ → Install app on Android). The service worker caches the whole app, so after this
+   it works in airplane mode.
+3. **Receive:** run `courierqr send file.md` on the computer, tap **Start camera**, and point
+   the phone at the codes. The bar fills as pieces arrive, in any order. When it's full, type
+   the passphrase and then save, share or copy the file.
+
+The app is locked down: a strict Content-Security-Policy allows no outside origins at all,
+decryption happens in a Web Worker inside WebAssembly, and the decrypted bytes are wiped
+from WebAssembly memory as soon as they're handed to the page.
+
+Develop locally with `./web/build.sh --serve`, which serves on `http://localhost:8080`.
+Desktop browsers allow the camera on localhost.
 
 ## Build & test
 
 ```sh
-cargo test                 # fast suite
+cargo test                 # fast suite (core, CLI, and the wasm crate's C ABI natively)
 cargo test --release       # also runs the 12 MB multi-block test
+./web/build.sh             # build web/courierqr.wasm (rustup target add wasm32-unknown-unknown)
+
+# Compare QR detection strategies on a camera recording:
+cargo run --release -p courierqr-wasm --example scanbench -- capture.y4m
 ```
 
 The core tests simulate the camera as a hostile channel: 40% frame loss, 10% bit-flip
@@ -83,6 +111,12 @@ interleaved transfers, and hostile CRC-valid headers. The CLI tests render **rea
 images**, add blur, contrast loss and noise, decode them with
 [rxing](https://github.com/rxing-core/rxing) (a Rust port of ZXing), and reassemble the
 encrypted file. This covers the whole optical path except the physical camera.
+
+The web app was tested in real headless Chrome with a **fake webcam**: a synthesized video
+of the sender as a phone would film it (perspective tilt, rotation, blur, washed-out
+contrast, lighting gradient, sensor noise, frames caught mid-change). The app received a
+63 KB file in 2.6 s, rejected a wrong passphrase, and saved a byte-identical download. It
+also ran again with the network switched off, served entirely from its offline cache.
 
 ## Using the core
 

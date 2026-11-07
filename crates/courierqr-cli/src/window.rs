@@ -2,6 +2,7 @@
 //!
 //! Keys: Space pause · ↑/↓ faster/slower · Esc or Q quit.
 
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
@@ -39,6 +40,7 @@ pub fn run(tx: &Transmission, layout: &Layout, fps: f64) -> Result<()> {
     let mut buffer = vec![0u32; w * h];
     let mut last = Instant::now() - Duration::from_secs(1);
     let goal = tx.source_frames();
+    let mut last_status = Instant::now() - Duration::from_secs(1);
 
     while window.is_open() && !window.is_key_down(Key::Escape) && !window.is_key_down(Key::Q) {
         if window.is_key_pressed(Key::Space, KeyRepeat::No) {
@@ -60,12 +62,22 @@ pub fn run(tx: &Transmission, layout: &Layout, fps: f64) -> Result<()> {
                 let v = p as u32;
                 *dst = (v << 16) | (v << 8) | v;
             }
-            window.set_title(&format!(
-                "CourierQR — {shown} frames sent (receiver needs ≈{goal}) · {fps:.0} fps{}",
+        }
+        // Progress goes to the title bar *and* the terminal: GNOME on Wayland
+        // doesn't draw title bars for minifb windows, so the terminal is the
+        // only place you'd see it there.
+        if last_status.elapsed() >= Duration::from_millis(250) {
+            last_status = Instant::now();
+            let status = format!(
+                "{shown} frames sent (receiver needs ≈{goal}) · {fps:.0} fps{}",
                 if paused { " · PAUSED" } else { "" }
-            ));
+            );
+            window.set_title(&format!("CourierQR — {status}"));
+            eprint!("\r\x1b[2K{status}  [space pause · ↑/↓ speed · esc quit]");
+            let _ = std::io::stderr().flush();
         }
         window.update_with_buffer(&buffer, w, h)?;
     }
+    eprintln!();
     Ok(())
 }

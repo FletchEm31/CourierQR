@@ -104,10 +104,12 @@ struct OpenArgs {
 #[derive(Args)]
 struct LookArgs {
     /// QR version (bigger = more data per code, harder for cameras). 10–40.
-    #[arg(long, default_value_t = 25, value_parser = clap::value_parser!(i16).range(10..=40))]
+    /// Default 15: in camera tests a 2×2 grid of v15 codes read in 100% of
+    /// frames, while v20 codes at the same screen size dropped to ~22%.
+    #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(i16).range(10..=40))]
     qr_version: i16,
     /// Codes on screen at once: 1, 2 (side by side) or 4 (2×2).
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 4)]
     grid: usize,
     /// Max size of the code area in pixels (WIDTHxHEIGHT).
     #[arg(long, default_value = "1000x1000", value_parser = parse_size)]

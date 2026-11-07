@@ -64,7 +64,7 @@ impl Transmission {
         let oti = encoder.get_config();
 
         Ok(Transmission {
-            transfer_id: rand::random(),
+            transfer_id: random_u32(),
             oti,
             oti_bytes: oti.serialize(),
             encoder,
@@ -163,4 +163,11 @@ impl Iterator for FrameStream<'_> {
             &packet,
         ))
     }
+}
+
+/// Random transfer id from the OS / browser CSPRNG (same source age uses).
+fn random_u32() -> u32 {
+    let mut b = [0u8; 4];
+    getrandom::getrandom(&mut b).expect("system random number generator unavailable");
+    u32::from_ne_bytes(b)
 }

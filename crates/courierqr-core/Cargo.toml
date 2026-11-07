@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 age = "0.12.1"
 crc32fast = "1.5.4"
+getrandom = "0.2"
 miniz_oxide = "0.9.1"
-rand = "0.10.3"
 raptorq = "2.0.1"
 thiserror = "2.0.21"
