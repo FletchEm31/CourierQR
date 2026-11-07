@@ -43,8 +43,18 @@ function fatal(msg) {
 }
 
 if ("serviceWorker" in navigator && window.isSecureContext) {
+  const hadController = !!navigator.serviceWorker.controller;
   navigator.serviceWorker.register("sw.js").catch(() => {});
+  // A new version took over: reload into it right away (unless we're in the
+  // middle of something), instead of making people relaunch the app twice.
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController) return; // first install, not an update
+    const busyNow = running || tx.running || !views.unlock.hidden || !views.done.hidden;
+    if (busyNow) pendingReload = true;
+    else location.reload();
+  });
 }
+let pendingReload = false;
 
 // ---------------------------------------------------------------- camera
 
@@ -562,6 +572,7 @@ function drawCodes(codes) {
 }
 
 function stopSending() {
+  if (pendingReload) return location.reload();
   tx.running = false;
   clearInterval(tx.timer);
   tx.lock?.release?.().catch(() => {});
@@ -591,6 +602,7 @@ $("tab-keys").addEventListener("click", openPairView);
 // ---------------------------------------------------------------- reset
 
 function resetAll() {
+  if (pendingReload) return location.reload();
   file?.data.fill(0);
   file = null;
   codeTimes = [];

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use courierqr_core::{Accepted, Receiver};
+use courierqr_core::{Accepted, FrameError, Receiver};
 
 use crate::decode;
 
@@ -286,14 +286,17 @@ pub fn scan_until_complete(src: &mut dyn Source, preview: bool) -> Result<Receiv
     let mut last_status = Instant::now() - Duration::from_secs(1);
     let (mut frames, mut codes) = (0u64, 0u64);
     let mut flash = 0u8;
+    let mut why = Rejections::default();
 
     while let Some(f) = src.next_frame()? {
         frames += 1;
         let mut new = 0;
         for payload in decode::decode_all(&f.pixels, f.width, f.height) {
             codes += 1;
-            if let Ok(Accepted::Progress | Accepted::Complete) = rx.push(&payload) {
-                new += 1;
+            match rx.push(&payload) {
+                Ok(Accepted::Progress | Accepted::Complete) => new += 1,
+                Ok(_) => {}
+                Err(e) => why.note(e, &payload),
             }
         }
         if new > 0 {
@@ -302,8 +305,13 @@ pub fn scan_until_complete(src: &mut dyn Source, preview: bool) -> Result<Receiv
         let p = rx.progress();
         if last_status.elapsed() >= Duration::from_millis(250) || p.complete {
             last_status = Instant::now();
-            let status = if p.needed == 0 {
-                format!("{frames} camera frames, {codes} codes read, waiting for a CourierQR code")
+            let status = if p.needed == 0 && codes == 0 {
+                format!("{frames} camera frames, no QR code in view yet")
+            } else if p.needed == 0 {
+                format!(
+                    "{frames} camera frames, {codes} codes read but none are a transfer: {}",
+                    why.summary()
+                )
             } else {
                 format!(
                     "{}/~{} pieces · {:.0}s",
@@ -335,6 +343,52 @@ pub fn scan_until_complete(src: &mut dyn Source, preview: bool) -> Result<Receiv
     }
     eprintln!();
     Ok(rx)
+}
+
+/// Why codes were turned away, so "nothing happens" is never a mystery.
+#[derive(Default)]
+struct Rejections {
+    not_courierqr: u64,
+    damaged: u64,
+    other: u64,
+    example: Option<String>,
+}
+
+impl Rejections {
+    fn note(&mut self, e: FrameError, payload: &[u8]) {
+        match e {
+            FrameError::NotCourierQr => {
+                self.not_courierqr += 1;
+                if self.example.is_none() {
+                    let text: String = String::from_utf8_lossy(payload).chars().take(24).collect();
+                    self.example = Some(text.replace(|c: char| c.is_control(), "."));
+                }
+            }
+            FrameError::Checksum | FrameError::Truncated => self.damaged += 1,
+            _ => self.other += 1,
+        }
+    }
+
+    fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        if self.not_courierqr > 0 {
+            let what = match self.example.as_deref() {
+                Some(t) if t.to_ascii_lowercase().starts_with("age1") => {
+                    "a pairing key (is the phone on the Keys screen? use Send)".to_string()
+                }
+                Some(t) => format!("some other QR code (\"{t}…\")"),
+                None => "other QR codes".to_string(),
+            };
+            parts.push(format!("{} were {what}", self.not_courierqr));
+        }
+        if self.damaged > 0 {
+            parts.push(format!("{} damaged (checksum failed)", self.damaged));
+        }
+        if self.other > 0 {
+            parts.push(format!("{} unsupported", self.other));
+        }
+        parts.join(", ")
+    }
 }
 
 // ---------------------------------------------------------------- preview window

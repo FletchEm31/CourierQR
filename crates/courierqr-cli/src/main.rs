@@ -351,6 +351,11 @@ fn receive_images(images: &[PathBuf]) -> Result<Receiver> {
 /// given; else this computer's own identity, silently; then a passphrase.
 fn finish(rx: Receiver, args: &OpenArgs, out: &Path, force: bool) -> Result<()> {
     let p = rx.progress();
+    if p.needed == 0 {
+        bail!(
+            "no CourierQR transfer was seen. Is the phone on its Send screen, showing the full-screen codes?"
+        );
+    }
     if !p.complete {
         bail!(
             "not enough frames yet: have {} distinct, need about {}. Capture more of the loop",
