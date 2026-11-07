@@ -1,7 +1,7 @@
 // CourierQR receiver UI: camera -> worker (wasm) -> unlock -> save.
 
 const $ = (id) => document.getElementById(id);
-const views = { scan: $("scan"), pair: $("pair"), unlock: $("unlock"), done: $("done") };
+const views = { scan: $("scan"), pair: $("pair"), send: $("send"), unlock: $("unlock"), done: $("done") };
 
 const MAX_DIM = 1280; // longest side handed to the decoder
 
@@ -12,11 +12,14 @@ let busy = false; // a frame is in the worker; don't queue more (backpressure)
 let running = false;
 let file = null; // {name, data: Uint8Array}
 let codeTimes = []; // timestamps of newly accepted pieces, for the rate readout
+let scanMode = "receive"; // "receive" a transfer, or "key": look for a computer's public key
 
 // ---------------------------------------------------------------- setup
 
 function show(name) {
   for (const [k, el] of Object.entries(views)) el.hidden = k !== name;
+  const tab = { scan: "receive", unlock: "receive", done: "receive", send: "send", pair: "keys" }[name];
+  for (const t of ["receive", "send", "keys"]) $(`tab-${t}`).setAttribute("aria-selected", String(t === tab));
 }
 
 function startWorker() {
@@ -27,6 +30,9 @@ function startWorker() {
     else if (m.type === "progress") onProgress(m);
     else if (m.type === "opened") onOpened(m);
     else if (m.type === "key") onKey(m);
+    else if (m.type === "keyscan") onKeyScan(m);
+    else if (m.type === "tx-started") onTxStarted(m);
+    else if (m.type === "tx-qrs") onTxQrs(m);
   };
   worker.onerror = (e) => fatal(`Decoder crashed: ${e.message || "unknown error"}`);
 }
@@ -107,7 +113,7 @@ function pump() {
   if (!busy && workerReady && v.readyState >= 2 && v.videoWidth) {
     busy = true;
     createImageBitmap(v)
-      .then((bitmap) => worker.postMessage({ type: "frame", bitmap, maxDim: MAX_DIM }, [bitmap]))
+      .then((bitmap) => worker.postMessage({ type: "frame", bitmap, maxDim: MAX_DIM, mode: scanMode }, [bitmap]))
       .catch(() => { busy = false; });
   }
   next();
@@ -296,7 +302,73 @@ async function openPairView() {
   $("nokey").hidden = !!key;
   $("haskey").hidden = !key;
   if (key) worker.postMessage({ type: "keyinfo", public: key.public });
+  await renderComputer();
   show("pair");
+}
+
+// ---- the computer this phone sends to (its public key only)
+const loadComputer = () => idb("readonly", (st) => st.get("computer")).catch(() => null);
+let pendingComputer = null;
+
+async function renderComputer() {
+  const c = await loadComputer();
+  $("nocomp").hidden = !!c || !!pendingComputer;
+  $("confirmcomp").hidden = !pendingComputer;
+  $("hascomp").hidden = !c || !!pendingComputer;
+  if (c) $("compfp").textContent = c.fingerprint;
+}
+
+$("scancomp").addEventListener("click", () => {
+  scanMode = "key";
+  $("idle-text").textContent = "Point the camera at the code from `courierqr pair show`.";
+  $("pieces").textContent = "Looking for the computer's key…";
+  $("rate").textContent = "";
+  $("bar").style.width = "0";
+  show("scan");
+  startCamera();
+});
+
+function onKeyScan(m) {
+  busy = false;
+  if (scanMode !== "key" || !m.public) return;
+  stopCamera();
+  scanMode = "receive";
+  resetScanText();
+  pendingComputer = { public: m.public, fingerprint: m.fingerprint, added: Date.now() };
+  $("compfp-new").textContent = m.fingerprint;
+  openPairView();
+}
+
+$("compyes").addEventListener("click", async () => {
+  await idb("readwrite", (st) => st.put(pendingComputer, "computer"));
+  navigator.storage?.persist?.().catch(() => {});
+  pendingComputer = null;
+  renderComputer();
+});
+$("compno").addEventListener("click", () => {
+  pendingComputer = null;
+  renderComputer();
+});
+let delCompArmed = null;
+$("delcomp").addEventListener("click", async () => {
+  if (!delCompArmed) {
+    $("delcomp").textContent = "Tap again to forget";
+    delCompArmed = setTimeout(() => {
+      delCompArmed = null;
+      $("delcomp").textContent = "Forget this computer";
+    }, 4000);
+    return;
+  }
+  clearTimeout(delCompArmed);
+  delCompArmed = null;
+  $("delcomp").textContent = "Forget this computer";
+  await idb("readwrite", (st) => st.delete("computer"));
+  renderComputer();
+});
+
+function resetScanText() {
+  $("idle-text").innerHTML = "Point your camera at the CourierQR window.<br>Order doesn't matter, and missed frames are fine.";
+  $("pieces").textContent = "waiting for codes…";
 }
 
 async function onKey(m) {
@@ -330,9 +402,7 @@ function drawQr(canvas, qr) {
   }
 }
 
-$("keybtn").addEventListener("click", openPairView);
 $("genkey").addEventListener("click", () => worker.postMessage({ type: "keygen" }));
-$("pairdone").addEventListener("click", () => show("scan"));
 $("copykey").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("paircmd").textContent);
   $("copykey").textContent = "Copied ✓";
@@ -360,6 +430,163 @@ $("delkey").addEventListener("click", async () => {
   $("nokey").hidden = false;
   $("haskey").hidden = true;
 });
+
+// ---------------------------------------------------------------- sending
+
+let sendFile = null; // {name, data: Uint8Array}
+const tx = { running: false, paused: false, timer: 0, queue: [], waiting: false, shown: 0, k: 0, grid: 1, fps: 6, lock: null };
+
+async function openSendView() {
+  stopCamera();
+  $("idle").hidden = false;
+  $("stop").hidden = true;
+  const c = await loadComputer();
+  $("to-device").disabled = !c;
+  $("to-device-label").textContent = c ? `Paired computer (${c.fingerprint})` : "Paired computer (pair one under Keys)";
+  if (c && !$("to-device").dataset.touched) $("to-device").checked = true;
+  syncSendForm();
+  show("send");
+}
+
+function syncSendForm() {
+  const byPass = $("to-pass").checked;
+  $("sendpass").hidden = !byPass;
+  $("sendgo").disabled = !sendFile || (byPass && $("sendpass").value.length < 12);
+  if (sendFile) {
+    const v = Number($("qrv").value), grid = Number($("grid").value), fps = Number($("fps").value);
+    // ~ciphertext ≈ compressed size + ~250 B age overhead; estimate assumes no compression
+    const perFrame = Math.max(1, workerCapacity(v) - 28);
+    const frames = Math.ceil((sendFile.data.length + 250) / perFrame);
+    const secs = frames / (fps * grid);
+    $("pickmeta").textContent = `${formatBytes(sendFile.data.length)} · at most ~${frames} codes · ≥${secs < 10 ? secs.toFixed(1) : Math.round(secs)} s of showing (less if it compresses)`;
+  }
+}
+// QR byte capacities at ECC L (matches cq_qr_capacity)
+const workerCapacity = (v) => ({ 8: 192, 10: 271, 12: 367, 15: 520 })[v] ?? 271;
+
+$("pick").addEventListener("change", async (e) => {
+  const f = e.target.files?.[0];
+  if (!f) return;
+  sendFile = { name: f.name, data: new Uint8Array(await f.arrayBuffer()) };
+  $("pickname").textContent = f.name;
+  syncSendForm();
+});
+for (const id of ["to-device", "to-pass"]) $(id).addEventListener("change", () => { $("to-device").dataset.touched = "1"; syncSendForm(); });
+for (const id of ["sendpass", "qrv", "grid", "fps"]) $(id).addEventListener("input", syncSendForm);
+
+$("sendgo").addEventListener("click", async () => {
+  $("send-err").hidden = true;
+  const byPass = $("to-pass").checked;
+  const key = byPass ? $("sendpass").value : (await loadComputer())?.public;
+  if (!key) return;
+  $("sendgo").disabled = true;
+  $("sendgo").textContent = byPass ? "Encrypting…" : "Starting…";
+  tx.grid = Number($("grid").value);
+  tx.fps = Number($("fps").value);
+  const data = sendFile.data.slice().buffer;
+  worker.postMessage(
+    { type: "tx-start", name: sendFile.name, data, mode: byPass ? "passphrase" : "device", key, version: Number($("qrv").value) },
+    [data],
+  );
+});
+
+function onTxStarted(m) {
+  $("sendgo").textContent = "Start sending";
+  syncSendForm();
+  if (!m.ok) {
+    $("send-err").textContent = m.error;
+    $("send-err").hidden = false;
+    return;
+  }
+  $("sendpass").value = "";
+  Object.assign(tx, { running: true, paused: false, queue: [], waiting: false, shown: 0, k: m.sourceFrames });
+  $("broadcast").hidden = false;
+  $("bpause").textContent = "Pause";
+  sizeCanvas();
+  navigator.wakeLock?.request("screen").then((l) => (tx.lock = l)).catch(() => {});
+  requestCodes();
+  tx.timer = setInterval(tick, 1000 / tx.fps);
+}
+
+function requestCodes() {
+  if (tx.waiting || tx.queue.length >= 2) return;
+  tx.waiting = true;
+  worker.postMessage({ type: "tx-next", count: tx.grid });
+}
+
+function onTxQrs(m) {
+  tx.waiting = false;
+  if (!tx.running) return;
+  tx.queue.push(m.codes);
+  requestCodes();
+}
+
+function tick() {
+  if (!tx.running || tx.paused) return;
+  const codes = tx.queue.shift();
+  requestCodes();
+  if (!codes) return; // encoder fell behind; keep showing the last set
+  drawCodes(codes);
+  tx.shown += codes.length;
+  $("bstatus").textContent = `${tx.shown} codes shown · receiver needs ≈${tx.k} · ${tx.fps}/s`;
+}
+
+function sizeCanvas() {
+  const c = $("bcanvas");
+  const dpr = window.devicePixelRatio || 1;
+  const side = Math.floor(Math.min(innerWidth, innerHeight - 70) * 0.96);
+  c.style.width = c.style.height = `${side}px`;
+  c.width = c.height = Math.floor(side * dpr);
+}
+
+function drawCodes(codes) {
+  const c = $("bcanvas");
+  const ctx = c.getContext("2d");
+  const cols = codes.length > 1 ? 2 : 1;
+  const w = codes[0].width;
+  const cell = w + 8; // 4-module quiet zone each side
+  const scale = Math.max(1, Math.floor(c.width / (cell * cols)));
+  const off = Math.floor((c.width - scale * cell * cols) / 2);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, c.width, c.height);
+  ctx.fillStyle = "#000";
+  codes.forEach((q, i) => {
+    const ox = off + (i % cols) * cell * scale + 4 * scale;
+    const oy = off + Math.floor(i / cols) * cell * scale + 4 * scale;
+    for (let y = 0; y < q.width; y++) {
+      for (let x = 0; x < q.width; x++) {
+        if (q.modules[y * q.width + x]) ctx.fillRect(ox + x * scale, oy + y * scale, scale, scale);
+      }
+    }
+  });
+}
+
+function stopSending() {
+  tx.running = false;
+  clearInterval(tx.timer);
+  tx.lock?.release?.().catch(() => {});
+  tx.lock = null;
+  worker.postMessage({ type: "tx-stop" });
+  $("broadcast").hidden = true;
+}
+
+$("bpause").addEventListener("click", () => {
+  tx.paused = !tx.paused;
+  $("bpause").textContent = tx.paused ? "Resume" : "Pause";
+});
+$("bstop").addEventListener("click", stopSending);
+$("bcanvas").addEventListener("click", () => $("bpause").click());
+addEventListener("resize", () => tx.running && sizeCanvas());
+
+// ---------------------------------------------------------------- tabs
+
+$("tab-receive").addEventListener("click", () => {
+  scanMode = "receive";
+  resetScanText();
+  show("scan");
+});
+$("tab-send").addEventListener("click", openSendView);
+$("tab-keys").addEventListener("click", openPairView);
 
 // ---------------------------------------------------------------- reset
 

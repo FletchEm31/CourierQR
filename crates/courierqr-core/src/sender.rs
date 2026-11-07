@@ -1,5 +1,6 @@
 //! Sending side: file -> payload -> age ciphertext -> endless frame stream.
 
+use std::borrow::Borrow;
 use std::collections::VecDeque;
 
 use raptorq::{Encoder, ObjectTransmissionInformation};
@@ -99,27 +100,43 @@ impl Transmission {
     /// Endless stream of frames: every source symbol once, then fresh
     /// repair symbols forever. Any `source_frames()`-ish subset decodes,
     /// in any order, so the display can simply loop on this.
-    pub fn frames(&self) -> FrameStream<'_> {
-        FrameStream {
-            tx: self,
-            queue: VecDeque::new(),
-            sent_source: false,
-            repair_round: 0,
-        }
+    pub fn frames(&self) -> FrameStream<&Transmission> {
+        FrameStream::new(self)
+    }
+
+    /// Like [`frames`](Self::frames), but the stream owns the transmission
+    /// (handy when there's no stack frame to borrow from, e.g. in wasm).
+    pub fn into_frames(self) -> FrameStream<Transmission> {
+        FrameStream::new(self)
     }
 }
 
-/// Iterator returned by [`Transmission::frames`]. Never ends.
-pub struct FrameStream<'a> {
-    tx: &'a Transmission,
+/// Iterator returned by [`Transmission::frames`] / [`Transmission::into_frames`].
+/// Never ends.
+pub struct FrameStream<T: Borrow<Transmission>> {
+    tx: T,
     queue: VecDeque<Vec<u8>>,
     sent_source: bool,
     repair_round: u32,
 }
 
-impl FrameStream<'_> {
+impl<T: Borrow<Transmission>> FrameStream<T> {
+    fn new(tx: T) -> Self {
+        FrameStream {
+            tx,
+            queue: VecDeque::new(),
+            sent_source: false,
+            repair_round: 0,
+        }
+    }
+
+    /// The transmission this stream is drawing from.
+    pub fn transmission(&self) -> &Transmission {
+        self.tx.borrow()
+    }
+
     fn refill(&mut self) {
-        let blocks = self.tx.encoder.get_block_encoders();
+        let blocks = self.tx.borrow().encoder.get_block_encoders();
         if !self.sent_source {
             for block in blocks {
                 self.queue
@@ -149,7 +166,7 @@ impl FrameStream<'_> {
     }
 }
 
-impl Iterator for FrameStream<'_> {
+impl<T: Borrow<Transmission>> Iterator for FrameStream<T> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Vec<u8>> {
@@ -157,11 +174,8 @@ impl Iterator for FrameStream<'_> {
             self.refill();
         }
         let packet = self.queue.pop_front()?;
-        Some(frame::encode(
-            self.tx.transfer_id,
-            &self.tx.oti_bytes,
-            &packet,
-        ))
+        let tx = self.tx.borrow();
+        Some(frame::encode(tx.transfer_id, &tx.oti_bytes, &packet))
     }
 }
 

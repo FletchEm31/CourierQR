@@ -17,9 +17,12 @@
 use std::cell::RefCell;
 
 use courierqr_core::secrecy::ExposeSecret;
-use courierqr_core::{Accepted, Error, FrameError, OpenKey, ReceivedFile, Receiver};
+use courierqr_core::{
+    Accepted, Error, FrameConfig, FrameError, FrameStream, OpenKey, ReceivedFile, Receiver,
+    SealKey, Transmission,
+};
 
-pub mod scan;
+pub use courierqr_core::scan;
 
 // ---------------------------------------------------------------- state
 
@@ -38,8 +41,12 @@ struct State {
     keys: Option<(String, String)>,
     /// Output of `cq_fingerprint`.
     text: String,
-    /// Output of `cq_qr_encode`: width*width modules, 1 = dark.
+    /// Output of `cq_qr_encode` / `cq_tx_next_qr`: width*width modules, 1 = dark.
     qr: Vec<u8>,
+    /// Output of `cq_scan_first`.
+    raw: Vec<u8>,
+    /// Active outgoing transfer and the QR version its frames are sized for.
+    tx: Option<(FrameStream<Transmission>, i16)>,
 }
 
 thread_local! {
@@ -428,6 +435,150 @@ pub unsafe extern "C" fn cq_qr_encode(ptr: *const u8, len: usize) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn cq_qr_ptr() -> *const u8 {
     with(|s| s.qr.as_ptr())
+}
+
+// ---------------------------------------------------------------- sending
+
+/// Byte capacity of a byte-mode QR code of `version` at ECC L (0 if invalid).
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_qr_capacity(version: i32) -> usize {
+    qr_capacity(version as i16)
+}
+
+fn qr_capacity(version: i16) -> usize {
+    use qrcode::{EcLevel, Version, bits::Bits};
+    if !(1..=40).contains(&version) {
+        return 0;
+    }
+    let fits = |n: usize| {
+        let mut bits = Bits::new(Version::Normal(version));
+        bits.push_byte_data(&vec![0u8; n]).is_ok() && bits.push_terminator(EcLevel::L).is_ok()
+    };
+    let (mut lo, mut hi) = (0usize, 3000usize);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(mid) { lo = mid } else { hi = mid - 1 }
+    }
+    lo
+}
+
+/// Start sending a file. `mode` 0 = passphrase (`key` is the passphrase),
+/// 1 = paired device (`key` is its `age1...` public key). Frames are sized
+/// for byte-mode QR codes of `version` at ECC L. Returns 0, or a negative
+/// code with the reason in `cq_error_*`.
+///
+/// # Safety
+/// Each (ptr, len) pair must point to readable memory of that length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cq_tx_start(
+    name_ptr: *const u8,
+    name_len: usize,
+    data_ptr: *const u8,
+    data_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+    mode: u32,
+    version: i32,
+) -> i32 {
+    let name = String::from_utf8_lossy(unsafe { slice(name_ptr, name_len) }).into_owned();
+    let data = unsafe { slice(data_ptr, data_len) };
+    let key = String::from_utf8_lossy(unsafe { slice(key_ptr, key_len) }).into_owned();
+    let cap = qr_capacity(version as i16);
+    let seal = match mode {
+        0 => SealKey::passphrase(key),
+        _ => SealKey::recipient(key),
+    };
+    match Transmission::new(
+        &name,
+        data,
+        &seal,
+        FrameConfig {
+            max_frame_bytes: cap,
+        },
+    ) {
+        Ok(tx) => with(|s| {
+            s.tx = Some((tx.into_frames(), version as i16));
+            0
+        }),
+        Err(e) => with(|s| {
+            s.last_error = e.to_string();
+            -1
+        }),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_tx_source_frames() -> u32 {
+    with(|s| {
+        s.tx.as_ref()
+            .map_or(0, |(f, _)| f.transmission().source_frames() as u32)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_tx_ciphertext_len() -> u32 {
+    with(|s| {
+        s.tx.as_ref()
+            .map_or(0, |(f, _)| f.transmission().ciphertext_len() as u32)
+    })
+}
+
+/// Encode the next frame as a QR code (fixed version, ECC L, byte mode).
+/// Returns its width (matrix at `cq_qr_ptr`), or -1 if no transfer is active.
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_tx_next_qr() -> i32 {
+    use qrcode::{EcLevel, QrCode, Version, bits::Bits};
+    with(|s| {
+        let Some((stream, version)) = s.tx.as_mut() else {
+            return -1;
+        };
+        let frame = stream.next().expect("frame stream never ends");
+        let mut bits = Bits::new(Version::Normal(*version));
+        let code = bits
+            .push_byte_data(&frame)
+            .and_then(|_| bits.push_terminator(EcLevel::L))
+            .and_then(|_| QrCode::with_bits(bits, EcLevel::L));
+        match code {
+            Ok(code) => {
+                s.qr = code
+                    .to_colors()
+                    .iter()
+                    .map(|c| (*c == qrcode::Color::Dark) as u8)
+                    .collect();
+                code.width() as i32
+            }
+            Err(_) => -1,
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_tx_stop() {
+    with(|s| s.tx = None);
+}
+
+/// Decode the first QR code in a grayscale frame, whatever it holds (used
+/// to scan a computer's public key). Returns its length (bytes at
+/// `cq_raw_ptr`), or 0 if none was found.
+///
+/// # Safety
+/// `ptr` must point to `w*h` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cq_scan_first(ptr: *const u8, w: u32, h: u32) -> usize {
+    let pixels = unsafe { slice(ptr, (w as usize) * (h as usize)) };
+    let first = scan::decode_all(pixels, w, h)
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    with(|s| {
+        s.raw = first;
+        s.raw.len()
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_raw_ptr() -> *const u8 {
+    with(|s| s.raw.as_ptr())
 }
 
 // ---------------------------------------------------------------- randomness

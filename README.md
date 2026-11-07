@@ -1,8 +1,9 @@
 # CourierQR
 
-Encrypted, one-way file transfer between your own devices over a **screen → camera** link.
-No Wi-Fi, Bluetooth, USB, or cables: the sender shows a looping stream of QR codes, and
-the receiver points a camera at it until the file reassembles.
+Encrypted, one-way file transfer between your own devices over a **screen → camera** link,
+in both directions: **computer → phone** and **phone → computer (webcam)**. No Wi-Fi,
+Bluetooth, USB, or cables: the sender shows a looping stream of QR codes, and the receiver
+points a camera at it until the file reassembles.
 
 It's built for moving notes, keys and documents on and off an air-gapped machine, where
 plugging anything in is the thing you're trying to avoid.
@@ -40,7 +41,7 @@ file ◄─ unpack ◄─ age decrypt ◄─ RaptorQ decode ◄─ CRC check ◄
 | 1 | `courierqr-core`: pipeline, frame format, simulated-camera tests | ✅ done |
 | 2 | `courierqr` CLI: on-screen sender (1/2/4-code grid), PNG export, decode from images, keygen | ✅ done |
 | 3 | Phone receiver: offline web app (PWA), the same Rust core compiled to WebAssembly | ✅ done |
-| 4 | Linux webcam receiver (phone → desktop) | planned |
+| 4 | Phone → computer: phone app sends, `courierqr receive --camera` reads it with a webcam | ✅ done |
 
 ## Quick start (Linux)
 
@@ -58,7 +59,12 @@ $B pair add phone age1...          # from the phone's "Device key" screen; confi
 $B send notes.md --to phone
 $B pair list                       # names, fingerprints, keys
 
-# No camera yet? Export frames, or decode photos/screenshots/video stills.
+# Phone -> computer: pair once (the phone scans this computer's key), then receive by webcam.
+$B pair show                       # prints a QR code + fingerprint in the terminal
+$B cameras                         # list webcams
+$B receive --camera -o ~/Downloads # live preview; unlocks with this computer's key automatically
+
+# No camera? Export frames, or decode photos/screenshots/video stills.
 $B export notes.md -o frames/
 $B receive frames/*.png -o ~/Downloads             # any order, gaps are fine
 ```
@@ -96,6 +102,19 @@ the same fingerprint, like `EEHD-GY2Z-XADG`. From then on, `courierqr send file 
 needs no passphrase: the phone unlocks the file by itself as soon as the last piece arrives.
 Files sent with a passphrase still prompt for one. Install the app to your home screen so iOS
 doesn't clear the stored key.
+
+**Send from the phone (phone → computer):**
+1. On the computer, run `courierqr pair show`. On the phone, tap **Keys → Scan computer's
+   key**, point it at the terminal, and check the fingerprints match.
+2. On the phone: **Send → choose a file → Start sending**. The screen turns into a full-screen
+   QR code loop (it keeps the screen awake; tap to pause).
+3. On the computer: `courierqr receive --camera`. Hold the phone 20–30 cm from the webcam,
+   with screen brightness up, until the preview's bar fills. It unlocks with the computer's
+   own key and saves the file.
+
+Webcams see far less detail than phone cameras, so the phone defaults to **one medium code
+(QR v10) at 6 per second**, about 1.4 KB/s. That's fine for notes, keys and small documents.
+If your webcam is sharp, **Code settings** lets you go smaller and faster.
 
 The app is locked down: a strict Content-Security-Policy allows no outside origins at all,
 decryption happens in a Web Worker inside WebAssembly, and the decrypted bytes are wiped

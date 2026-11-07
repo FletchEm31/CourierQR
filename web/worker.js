@@ -1,7 +1,8 @@
 // Decoding worker: owns the wasm receiver so camera frames, QR detection
 // and (slow, deliberately) scrypt decryption never block the UI thread.
 //
-// in:  {type:"frame", bitmap: ImageBitmap, maxDim}   (bitmap is transferred)
+// in:  {type:"frame", bitmap: ImageBitmap, maxDim, mode?: "receive"|"key"}   (bitmap transferred)
+//      {type:"tx-start", name, data: ArrayBuffer, mode, key, version} | {type:"tx-next", count} | {type:"tx-stop"}
 //      {type:"open", passphrase?: string, identity?: string}
 //      {type:"reset"}
 //      {type:"keygen"} | {type:"keyinfo", public}
@@ -9,6 +10,8 @@
 //      {type:"progress", status, ms, received, needed, complete, lastFound, lastNew, totalCodes, totalRejected}
 //      {type:"opened", ok, error?, name?, data?: ArrayBuffer, auto?}
 //      {type:"key", secret?, public, fingerprint, qr: {width, modules}}
+//      {type:"keyscan", public?, fingerprint?}           (mode "key" frames)
+//      {type:"tx-started", ok, error?, sourceFrames, ciphertextLen} | {type:"tx-qrs", codes: [{width, modules}]}
 
 import { CourierQR, rgbaToGray } from "./courierqr.js";
 
@@ -31,7 +34,21 @@ onmessage = ({ data: msg }) => {
   }
   switch (msg.type) {
     case "frame":
-      return onFrame(msg.bitmap, msg.maxDim || 1280);
+      return onFrame(msg.bitmap, msg.maxDim || 1280, msg.mode || "receive");
+    case "tx-start": {
+      const r = cq.txStart({ ...msg, data: new Uint8Array(msg.data) });
+      return postMessage({ type: "tx-started", ...r });
+    }
+    case "tx-next": {
+      const codes = [];
+      for (let i = 0; i < (msg.count || 1); i++) {
+        const q = cq.txNextQr();
+        if (q) codes.push(q);
+      }
+      return postMessage({ type: "tx-qrs", codes }, codes.map((c) => c.modules.buffer));
+    }
+    case "tx-stop":
+      return cq.txStop();
     case "open":
       return onOpen(msg);
     case "keygen": {
@@ -46,7 +63,7 @@ onmessage = ({ data: msg }) => {
   }
 };
 
-function onFrame(bitmap, maxDim) {
+function onFrame(bitmap, maxDim, mode) {
   const t0 = performance.now();
   // Downscale big camera frames: QR detection cost grows with pixel count,
   // and 1280px is plenty when the codes fill a good part of the view.
@@ -60,6 +77,13 @@ function onFrame(bitmap, maxDim) {
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
   gray = rgbaToGray(ctx.getImageData(0, 0, w, h).data, gray);
+  if (mode === "key") {
+    // Pairing: looking for a computer's age1… public key, not a transfer.
+    const raw = cq.scanFirst(gray, w, h);
+    const text = raw ? new TextDecoder().decode(raw).trim() : "";
+    const fp = text.toLowerCase().startsWith("age1") ? cq.fingerprint(text) : null;
+    return postMessage({ type: "keyscan", public: fp ? text.toLowerCase() : null, fingerprint: fp });
+  }
   const status = cq.scan(gray, w, h);
   postMessage({ type: "progress", status, ms: performance.now() - t0, ...cq.progress() });
 }

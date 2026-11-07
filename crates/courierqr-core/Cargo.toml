@@ -12,5 +12,10 @@ crc32fast = "1.5.4"
 getrandom = "0.2"
 miniz_oxide = "0.9.1"
 raptorq = "2.0.1"
+rxing = { version = "0.9.3", default-features = false, features = ["decoders", "multi_barcode_readers", "encoding_rs", "qrcode"], optional = true }
 sha2 = "0.10"
 thiserror = "2.0.21"
+
+[features]
+# QR detection for camera frames (rxing): used by the webcam receiver and the browser build.
+scan = ["dep:rxing"]

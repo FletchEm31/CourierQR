@@ -1,6 +1,7 @@
 //! Drive the exact C ABI the web app uses (natively — same code as the
 //! .wasm), with real QR codes rendered as grayscale "camera frames".
 
+use courierqr_core::secrecy::ExposeSecret;
 use courierqr_core::{FrameConfig, SealKey, Transmission};
 use courierqr_wasm::*;
 use qrcode::bits::Bits;
@@ -166,4 +167,79 @@ fn pairing_keygen_fingerprint_and_qr() {
         vec![public.into_bytes()]
     );
     let _ = secret;
+}
+
+#[test]
+fn phone_sender_frames_decode_on_the_desktop_side() {
+    // Phone: start a paired send through the ABI...
+    let desk = courierqr_core::generate_device_keys();
+    let (name, data) = (
+        "from-phone.txt",
+        b"typed on the phone, read by a webcam".repeat(40),
+    );
+    cq_reset();
+    let rc = unsafe {
+        cq_tx_start(
+            name.as_ptr(),
+            name.len(),
+            data.as_ptr(),
+            data.len(),
+            desk.public.as_ptr(),
+            desk.public.len(),
+            1,
+            10,
+        )
+    };
+    assert_eq!(rc, 0);
+    assert_eq!(cq_qr_capacity(10), 271);
+    let k = cq_tx_source_frames() as usize;
+    assert!(k > 1);
+
+    // ...render each QR it produces, and decode it like the desktop would.
+    let mut rx = courierqr_core::Receiver::new();
+    for _ in 0..k + 5 {
+        let w = cq_tx_next_qr() as usize;
+        assert_eq!(w, 17 + 4 * 10);
+        let modules = read(cq_qr_ptr(), w * w);
+        let scale = 4;
+        let side = (w + 8) * scale;
+        let mut px = vec![255u8; side * side];
+        for y in 0..w * scale {
+            for x in 0..w * scale {
+                if modules[(y / scale) * w + x / scale] == 1 {
+                    px[(y + 4 * scale) * side + x + 4 * scale] = 0;
+                }
+            }
+        }
+        for p in courierqr_wasm::scan::decode_all(&px, side as u32, side as u32) {
+            let _ = rx.push(&p);
+        }
+        if rx.is_complete() {
+            break;
+        }
+    }
+    let file = rx
+        .open(&courierqr_core::OpenKey::identity(
+            desk.secret.expose_secret(),
+        ))
+        .unwrap()
+        .unwrap();
+    assert_eq!((file.name.as_str(), file.data), (name, data));
+    cq_tx_stop();
+    assert_eq!(cq_tx_next_qr(), -1);
+
+    // Scanning the computer's key QR returns its text verbatim.
+    let wk = unsafe { cq_qr_encode(desk.public.as_ptr(), desk.public.len()) } as usize;
+    let m = read(cq_qr_ptr(), wk * wk);
+    let side = (wk + 8) * 4;
+    let mut px = vec![255u8; side * side];
+    for y in 0..wk * 4 {
+        for x in 0..wk * 4 {
+            if m[(y / 4) * wk + x / 4] == 1 {
+                px[(y + 16) * side + x + 16] = 0;
+            }
+        }
+    }
+    let n = unsafe { cq_scan_first(px.as_ptr(), side as u32, side as u32) };
+    assert_eq!(read(cq_raw_ptr(), n), desk.public.as_bytes());
 }

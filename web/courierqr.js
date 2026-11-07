@@ -151,6 +151,45 @@ export class CourierQR {
     return rc === 0 ? fromUtf8.decode(this.#copyOut(x.cq_text_ptr(), x.cq_text_len())) : null;
   }
 
+  // ---------------------------------------------------------- sending
+
+  /** Bytes per frame for a byte-mode QR code of `version` at ECC L. */
+  qrCapacity(version) {
+    return this.#x.cq_qr_capacity(version);
+  }
+
+  /**
+   * Start sending. mode: "passphrase" (key = passphrase) or "device"
+   * (key = the computer's age1… public key). Frames sized for QR `version`.
+   */
+  txStart({ name, data, mode, key, version }) {
+    const x = this.#x;
+    const nb = utf8.encode(name), kb = utf8.encode(key);
+    const rc = this.#withBytes(nb, (np, nl) =>
+      this.#withBytes(data, (dp, dl) =>
+        this.#withBytes(kb, (kp, kl) => x.cq_tx_start(np, nl, dp, dl, kp, kl, mode === "device" ? 1 : 0, version))));
+    if (rc !== 0) return { ok: false, error: fromUtf8.decode(this.#copyOut(x.cq_error_ptr(), x.cq_error_len())) };
+    return { ok: true, sourceFrames: x.cq_tx_source_frames(), ciphertextLen: x.cq_tx_ciphertext_len() };
+  }
+
+  /** Next frame as a QR matrix {width, modules}, or null if not sending. */
+  txNextQr() {
+    const x = this.#x;
+    const width = x.cq_tx_next_qr();
+    return width > 0 ? { width, modules: this.#copyOut(x.cq_qr_ptr(), width * width) } : null;
+  }
+
+  txStop() {
+    this.#x.cq_tx_stop();
+  }
+
+  /** Raw bytes of the first QR code in a grayscale frame, or null. */
+  scanFirst(gray, width, height) {
+    const x = this.#x;
+    const n = this.#withBytes(gray, (p) => x.cq_scan_first(p, width, height));
+    return n ? this.#copyOut(x.cq_raw_ptr(), n) : null;
+  }
+
   /** QR matrix for text: {width, modules: Uint8Array(width²), 1 = dark}, or null. */
   qr(text) {
     const x = this.#x;

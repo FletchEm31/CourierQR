@@ -25,13 +25,19 @@
     <span id="net" class="pill" title="This app makes no network requests while receiving">offline-safe</span>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-receive" aria-selected="true">Receive</button>
+    <button role="tab" id="tab-send" aria-selected="false">Send</button>
+    <button role="tab" id="tab-keys" aria-selected="false">Keys</button>
+  </nav>
+
   <!-- 1. Scanning -->
   <section id="scan" class="view">
     <div class="viewport">
       <video id="video" playsinline muted autoplay></video>
       <div class="frame" aria-hidden="true"></div>
       <div id="idle" class="idle">
-        <p>Point your camera at the CourierQR window.<br>Order doesn't matter, and missed frames are fine.</p>
+        <p id="idle-text">Point your camera at the CourierQR window.<br>Order doesn't matter, and missed frames are fine.</p>
         <button id="start" class="primary">Start camera</button>
       </div>
     </div>
@@ -47,13 +53,13 @@
     <div class="controls">
       <select id="camera" aria-label="Camera" hidden></select>
       <button id="stop" hidden>Stop</button>
-      <button id="keybtn">Device key</button>
     </div>
   </section>
 
   <!-- Device key (pairing) -->
   <section id="pair" class="view" hidden>
-    <h2>Device key</h2>
+    <h2>This phone's key</h2>
+    <p class="muted small">For receiving: computers encrypt files to this key.</p>
     <div id="nokey">
       <p class="muted">Pair this phone once and you'll never type a passphrase again. The phone
         makes a keypair: the <b>secret</b> half never leaves this phone, and the <b>public</b>
@@ -74,7 +80,81 @@
         that's easier. The fingerprint check is what proves it wasn't swapped on the way.</p>
       <button id="delkey" class="link danger">Delete this device key</button>
     </div>
-    <button id="pairdone" class="link">Back to scanning</button>
+
+    <hr>
+    <h2>Computer to send to</h2>
+    <div id="nocomp">
+      <p class="muted small">For sending: the phone encrypts to your computer's key, so the
+        computer opens it with no passphrase. On the computer run <code>courierqr pair show</code>,
+        then scan the code it prints.</p>
+      <button id="scancomp" class="primary">Scan computer's key</button>
+    </div>
+    <div id="confirmcomp" hidden>
+      <p class="muted">Does the computer show this fingerprint?</p>
+      <p id="compfp-new" class="fp"></p>
+      <div class="actions">
+        <button id="compyes" class="primary">Yes, save it</button>
+        <button id="compno">No</button>
+      </div>
+    </div>
+    <div id="hascomp" hidden>
+      <p class="muted small">Sending to the computer with fingerprint:</p>
+      <p id="compfp" class="fp"></p>
+      <button id="delcomp" class="link danger">Forget this computer</button>
+    </div>
+  </section>
+
+  <!-- Send -->
+  <section id="send" class="view" hidden>
+    <h2>Send a file</h2>
+    <label class="file-btn wide">
+      <span id="pickname">Choose a file…</span>
+      <input id="pick" type="file">
+    </label>
+    <p id="pickmeta" class="muted small"></p>
+
+    <fieldset class="to">
+      <legend>Encrypt to</legend>
+      <label><input type="radio" name="to" value="device" id="to-device"> <span id="to-device-label">Paired computer</span></label>
+      <label><input type="radio" name="to" value="passphrase" id="to-pass" checked> Passphrase</label>
+    </fieldset>
+    <input id="sendpass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="off" autocapitalize="off" spellcheck="false">
+
+    <details>
+      <summary>Code settings</summary>
+      <label>Code size <select id="qrv">
+        <option value="8">Large (v8, 192 bytes each)</option>
+        <option value="10" selected>Medium (v10, 271 bytes each)</option>
+        <option value="12">Small (v12, 367 bytes each)</option>
+        <option value="15">Tiny (v15, 520 bytes each)</option>
+      </select></label>
+      <label>Codes at once <select id="grid">
+        <option value="1" selected>1</option>
+        <option value="4">4 (2×2)</option>
+      </select></label>
+      <label>Speed <select id="fps">
+        <option value="4">4 per second</option>
+        <option value="6" selected>6 per second</option>
+        <option value="8">8 per second</option>
+        <option value="10">10 per second</option>
+      </select></label>
+      <p class="muted small">Webcams see less detail than phone cameras: bigger codes and a single
+        code read most reliably. Turn your screen brightness up.</p>
+    </details>
+    <p id="send-err" class="error" role="alert" hidden></p>
+    <button id="sendgo" class="primary wide" disabled>Start sending</button>
+  </section>
+
+  <!-- Broadcasting (full screen) -->
+  <section id="broadcast" class="broadcast" hidden>
+    <canvas id="bcanvas"></canvas>
+    <div class="bbar">
+      <span id="bstatus"></span>
+      <span class="bbtns">
+        <button id="bpause">Pause</button>
+        <button id="bstop" class="primary">Done</button>
+      </span>
+    </div>
   </section>
 
   <!-- 2. Unlock -->

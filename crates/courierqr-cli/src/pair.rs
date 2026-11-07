@@ -10,7 +10,8 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use courierqr_core::{fingerprint, validate_public_key};
+use courierqr_core::secrecy::ExposeSecret;
+use courierqr_core::{fingerprint, generate_device_keys, validate_public_key};
 
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(d) = std::env::var_os("COURIERQR_CONFIG_DIR") {
@@ -116,6 +117,78 @@ pub fn remove(name: &str) -> Result<()> {
     }
     save(&devices)?;
     eprintln!("removed {name}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- this computer's identity
+
+fn identity_file() -> Result<PathBuf> {
+    Ok(config_dir()?.join("identity"))
+}
+
+/// This computer's own secret identity, if it has one.
+pub fn own_identity() -> Result<Option<String>> {
+    match fs::read_to_string(identity_file()?) {
+        Ok(text) => Ok(text
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("AGE-SECRET-KEY-"))
+            .map(str::to_owned)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Load this computer's identity, creating it (0600) on first use.
+/// Returns the public key.
+pub fn own_public_key() -> Result<String> {
+    let path = identity_file()?;
+    if let Some(secret) = own_identity()? {
+        return courierqr_core::public_key_of(&secret)
+            .with_context(|| format!("{} is corrupt", path.display()));
+    }
+    let keys = generate_device_keys();
+    fs::create_dir_all(path.parent().unwrap())?;
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&path)
+        .with_context(|| format!("creating {}", path.display()))?;
+    writeln!(
+        f,
+        "# CourierQR identity for this computer. SECRET: never share this file."
+    )?;
+    writeln!(f, "# public key: {}", keys.public)?;
+    writeln!(f, "{}", keys.secret.expose_secret())?;
+    eprintln!("created this computer's identity at {}", path.display());
+    Ok(keys.public)
+}
+
+/// Show this computer's public key so a phone can pair with it (to send *to* it).
+pub fn show(png: Option<&std::path::Path>) -> Result<()> {
+    let pk = own_public_key()?;
+    let fp = fingerprint(&pk)?;
+    let code = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::M)?;
+    if let Some(path) = png {
+        let img = crate::render::code_image(&code, 10);
+        image::save_buffer(
+            path,
+            &img.pixels,
+            img.width as u32,
+            img.height as u32,
+            image::ExtendedColorType::L8,
+        )?;
+        eprintln!("wrote {}", path.display());
+    } else {
+        print!("{}", crate::render::terminal_qr(&code));
+    }
+    println!("\nThis computer's public key:\n  {pk}\nfingerprint: {fp}");
+    eprintln!("\nOn the phone: Keys → Scan computer's key, then check the fingerprint matches.");
     Ok(())
 }
 

@@ -143,10 +143,40 @@ Detection collapses once a QR module is only about 3 blurred pixels wide. Differ
 detection strategies barely moved the numbers (19% → 21% at 2× the cost); module size is
 what matters. That's why the defaults are now 2×2 × v15.
 
+## Phone → computer (stage 4)
+
+```
+phone:  file ─► wasm: pack ─► age (to computer's key) ─► RaptorQ ─► QR (fixed version) ─► <canvas> loop
+desktop: webcam (V4L2) ─► luma ─► core::scan ─► Receiver ─► age (computer's identity) ─► file
+```
+
+- **One scanner everywhere.** QR detection moved into `courierqr-core` behind a `scan`
+  feature. The webcam receiver, the image receiver and the phone (as WebAssembly) all run the
+  same code.
+- **The computer's identity** is created on first use at `~/.config/courierqr/identity`
+  (0600). `pair show` prints its public key as a terminal QR code (half-block characters,
+  forced black-on-white so it scans on dark themes). The phone scans it, shows the
+  fingerprint, and stores only the public key.
+- **Webcam capture** uses V4L2 directly (`v4l` crate; no OpenCV or GStreamer). It prefers
+  MJPEG at 1280×720, since USB 2 webcams only reach full resolution at full frame rate in
+  MJPEG, and falls back to YUYV, where luma is every other byte. `--camera-file` replays a
+  `.y4m` recording through the exact same path, which is how it's tested without hardware.
+- **Physics, again.** A phone screen seen by a 720p fixed-focus webcam is small and soft. A
+  single v10 code at ~6 px/module reads reliably where a 2×2 v15 grid (fine for phone
+  cameras) would not, so the phone defaults to one code.
+- `FrameStream` is generic over `Borrow<Transmission>`, so the browser can own a stream
+  (`Transmission::into_frames`) without a self-referential struct.
+
+Tested end to end in headless Chrome: the phone app's fake camera scanned `pair show`'s QR
+(fingerprints matched), the phone broadcast a file to that computer, the canvas frames were
+recorded and turned into simulated webcam footage, and `receive --camera-file` unlocked it
+with the computer's key, byte-identical.
+
 ## Known follow-ups
 
-- Desktop webcam receiver (stage 4). It would also let `pair add` scan the phone's key QR
-  directly instead of copying the text.
+- `pair add --camera`: scan the phone's key QR with the webcam instead of copying text.
+- Tested on real webcams beyond the synthetic footage (MJPEG quirks vary by vendor;
+  `--camera-format yuyv` is the escape hatch).
 - Real-phone tuning (iOS Safari focus behaviour, frame rates). The synthetic tests are a
   floor, not a promise.
 - Tune the scrypt cost against real phone browser timings.

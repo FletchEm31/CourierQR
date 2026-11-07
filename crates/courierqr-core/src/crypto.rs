@@ -118,6 +118,13 @@ pub(crate) fn open(key: &OpenKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+/// The `age1...` public key belonging to an `AGE-SECRET-KEY-1...` identity.
+pub fn public_key_of(secret_key: &str) -> Result<String> {
+    let id = age::x25519::Identity::from_str(secret_key.trim())
+        .map_err(|e| Error::BadKey(e.to_string()))?;
+    Ok(id.to_public().to_string())
+}
+
 /// Check that `public_key` is a valid `age1...` X25519 recipient (bech32
 /// checksum included, so most typos are caught) and return it normalized.
 pub fn validate_public_key(public_key: &str) -> Result<String> {

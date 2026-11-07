@@ -36,6 +36,65 @@ pub fn encode(data: &[u8], version: i16) -> Result<QrCode> {
     Ok(QrCode::with_bits(bits, EcLevel::L)?)
 }
 
+/// Encode `data` in byte mode at the smallest version that fits, at `ec`.
+pub fn encode_smallest(data: &[u8], ec: EcLevel) -> Result<QrCode> {
+    (1..=40)
+        .find_map(|v| {
+            let mut bits = Bits::new(Version::Normal(v));
+            bits.push_byte_data(data).ok()?;
+            bits.push_terminator(ec).ok()?;
+            QrCode::with_bits(bits, ec).ok()
+        })
+        .context("data too large for a QR code")
+}
+
+/// Render a QR code for a terminal using half-block characters (two module
+/// rows per text line), forcing black-on-white so it scans on dark themes.
+pub fn terminal_qr(code: &QrCode) -> String {
+    let n = code.width();
+    let colors = code.to_colors();
+    let q = QUIET_MODULES as isize;
+    let dark = |x: isize, y: isize| {
+        x >= 0
+            && y >= 0
+            && (x as usize) < n
+            && (y as usize) < n
+            && colors[y as usize * n + x as usize] == Color::Dark
+    };
+    let mut out = String::new();
+    let mut y = -q;
+    while y < n as isize + q {
+        for x in -q..n as isize + q {
+            let fg = if dark(x, y) { 16 } else { 231 }; // top half
+            let bg = if dark(x, y + 1) { 16 } else { 231 }; // bottom half
+            out.push_str(&format!("\x1b[38;5;{fg}m\x1b[48;5;{bg}m\u{2580}"));
+        }
+        out.push_str("\x1b[0m\n");
+        y += 2;
+    }
+    out
+}
+
+/// Plain grayscale image of a QR code (quiet zone included), `scale` px per module.
+pub fn code_image(code: &QrCode, scale: usize) -> Luma {
+    let n = code.width();
+    let side = (n + 2 * QUIET_MODULES) * scale;
+    let mut pixels = vec![255u8; side * side];
+    let colors = code.to_colors();
+    for y in 0..n * scale {
+        for x in 0..n * scale {
+            if colors[(y / scale) * n + x / scale] == Color::Dark {
+                pixels[(y + QUIET_MODULES * scale) * side + x + QUIET_MODULES * scale] = 0;
+            }
+        }
+    }
+    Luma {
+        width: side,
+        height: side,
+        pixels,
+    }
+}
+
 /// How many codes to show at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Grid {

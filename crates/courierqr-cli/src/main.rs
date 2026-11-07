@@ -1,5 +1,6 @@
 //! `courierqr` — send files as animated QR codes, export frames, decode captures.
 
+mod camera;
 mod decode;
 mod pair;
 mod render;
@@ -62,11 +63,24 @@ enum Cmd {
         #[arg(long)]
         count: Option<usize>,
     },
-    /// Reassemble a file from photos/screenshots/extracted video frames.
+    /// Receive a file: live from a webcam (`--camera`), or from photos,
+    /// screenshots or extracted video frames.
     Receive {
-        /// Image files (PNG or JPEG), in any order.
-        #[arg(required = true)]
+        /// Image files (PNG or JPEG), in any order. Omit when using --camera.
+        #[arg(required_unless_present_any = ["camera", "camera_file"])]
         images: Vec<PathBuf>,
+        /// Read codes live from a webcam (default /dev/video0; see `courierqr cameras`).
+        #[arg(long, value_name = "DEVICE", num_args = 0..=1, default_missing_value = "/dev/video0", conflicts_with = "images")]
+        camera: Option<String>,
+        /// Camera pixel format: mjpg, yuyv or grey (default: best available).
+        #[arg(long, value_name = "FORMAT", requires = "camera")]
+        camera_format: Option<String>,
+        /// Replay a .y4m recording as if it were the camera (testing/debugging).
+        #[arg(long, value_name = "FILE.y4m", hide = true, conflicts_with_all = ["images", "camera"])]
+        camera_file: Option<PathBuf>,
+        /// Don't open the camera preview window.
+        #[arg(long)]
+        no_preview: bool,
         #[command(flatten)]
         key: OpenArgs,
         /// Directory to save the file into.
@@ -81,7 +95,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PairCmd,
     },
-    /// Create a device keypair for paired mode. Prints the public key.
+    /// List webcams usable with `receive --camera`.
+    #[cfg(feature = "camera")]
+    Cameras,
+    /// Create a standalone keypair file (advanced; `pair show` manages this
+    /// computer's own key for you). Prints the public key.
     Keygen {
         /// Where to write the secret identity (created with 0600 permissions).
         #[arg(short, long)]
@@ -103,6 +121,13 @@ enum PairCmd {
     },
     /// List paired devices with their fingerprints.
     List,
+    /// Show this computer's public key as a QR code, so a phone can pair
+    /// with it and send files *to* this computer.
+    Show {
+        /// Write the QR code to a PNG instead of printing it in the terminal.
+        #[arg(long)]
+        png: Option<PathBuf>,
+    },
     /// Forget a paired device.
     Remove { name: String },
 }
@@ -121,7 +146,8 @@ struct SealArgs {
 
 #[derive(Args)]
 struct OpenArgs {
-    /// Secret identity file from `courierqr keygen` (otherwise: passphrase).
+    /// Secret identity file to decrypt with. Default: this computer's own
+    /// identity (from `pair show`), then a passphrase prompt.
     #[arg(long)]
     identity: Option<PathBuf>,
 }
@@ -179,10 +205,25 @@ fn main() -> Result<()> {
         }
         Cmd::Receive {
             images,
+            camera,
+            camera_format,
+            camera_file,
+            no_preview,
             key,
             out,
             force,
-        } => receive(&images, &key, &out, force),
+        } => {
+            let rx = if let Some(path) = camera_file {
+                camera::scan_until_complete(&mut camera::Y4mSource::open(&path)?, !no_preview)?
+            } else if let Some(dev) = camera {
+                open_camera(&dev, camera_format.as_deref(), !no_preview)?
+            } else {
+                receive_images(&images)?
+            };
+            finish(rx, &key, &out, force)
+        }
+        #[cfg(feature = "camera")]
+        Cmd::Cameras => camera::list_cameras(),
         Cmd::Pair { cmd } => match cmd {
             PairCmd::Add {
                 name,
@@ -190,6 +231,7 @@ fn main() -> Result<()> {
                 yes,
             } => pair::add(&name, &public_key, yes),
             PairCmd::List => pair::list(),
+            PairCmd::Show { png } => pair::show(png.as_deref()),
             PairCmd::Remove { name } => pair::remove(&name),
         },
         Cmd::Keygen { out } => keygen(&out),
@@ -270,10 +312,20 @@ fn export(tx: &Transmission, layout: &Layout, out: &Path, count: Option<usize>) 
     Ok(())
 }
 
-fn receive(images: &[PathBuf], args: &OpenArgs, out: &Path, force: bool) -> Result<()> {
+#[cfg(feature = "camera")]
+fn open_camera(dev: &str, format: Option<&str>, preview: bool) -> Result<Receiver> {
+    let pix = format.map(camera::parse_format).transpose()?;
+    camera::scan_until_complete(&mut camera::V4lSource::open(dev, pix)?, preview)
+}
+
+#[cfg(not(feature = "camera"))]
+fn open_camera(_: &str, _: Option<&str>, _: bool) -> Result<Receiver> {
+    bail!("this build has no webcam support (rebuild with the `camera` feature)")
+}
+
+fn receive_images(images: &[PathBuf]) -> Result<Receiver> {
     let mut rx = Receiver::new();
     let (mut codes, mut rejected) = (0usize, 0usize);
-
     'images: for path in images {
         let img = image::open(path)
             .with_context(|| format!("opening {}", path.display()))?
@@ -288,25 +340,49 @@ fn receive(images: &[PathBuf], args: &OpenArgs, out: &Path, force: bool) -> Resu
             }
         }
     }
-
-    let p = rx.progress();
     eprintln!(
         "read {codes} codes from {} images ({rejected} rejected)",
         images.len()
     );
+    Ok(rx)
+}
+
+/// Decrypt a completed transfer and save it. Key order: `--identity` if
+/// given; else this computer's own identity, silently; then a passphrase.
+fn finish(rx: Receiver, args: &OpenArgs, out: &Path, force: bool) -> Result<()> {
+    let p = rx.progress();
     if !p.complete {
         bail!(
-            "not enough frames yet: have {} distinct, need about {} — capture more of the loop",
+            "not enough frames yet: have {} distinct, need about {}. Capture more of the loop",
             p.received,
             p.needed
         );
     }
 
-    let key = match &args.identity {
-        Some(path) => OpenKey::identity(read_identity(path)?),
-        None => OpenKey::passphrase(passphrase(false)?),
+    let file = if let Some(path) = &args.identity {
+        rx.open(&OpenKey::identity(read_identity(path)?))
+            .expect("complete")?
+    } else {
+        let mut opened = None;
+        if let Some(secret) = pair::own_identity()? {
+            match rx.open(&OpenKey::identity(secret)).expect("complete") {
+                Ok(f) => {
+                    eprintln!("unlocked with this computer's key");
+                    opened = Some(f);
+                }
+                Err(courierqr_core::Error::Decrypt(_)) => {
+                    eprintln!("not sent to this computer's key; it needs a passphrase");
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        match opened {
+            Some(f) => f,
+            None => rx
+                .open(&OpenKey::passphrase(passphrase(false)?))
+                .expect("complete")?,
+        }
     };
-    let file = rx.open(&key).expect("complete")?;
 
     let dest = out.join(safe_name(&file.name)?);
     if dest.exists() && !force {

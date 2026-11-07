@@ -1,44 +1,11 @@
-//! Find and decode every QR code in a grayscale image, returning the raw
-//! bytes of each — never a text string, which would mangle binary frames.
-
-use std::collections::HashSet;
-
-use rxing::{
-    BarcodeFormat, DecodeHints, RXingResult, RXingResultMetadataType, RXingResultMetadataValue,
-};
+//! Find and decode every QR code in a grayscale image, returning raw bytes.
+//!
+//! Thin wrapper over `courierqr_core::scan` — the exact detector the phone
+//! runs as WebAssembly, so desktop and phone behave the same.
 
 /// All QR payloads found in the image (possibly none).
 pub fn decode_all(pixels: &[u8], width: usize, height: usize) -> Vec<Vec<u8>> {
-    let mut hints = DecodeHints {
-        PossibleFormats: Some(HashSet::from([BarcodeFormat::QR_CODE])),
-        TryHarder: Some(true),
-        ..Default::default()
-    };
-    match rxing::helpers::detect_multiple_in_luma_with_hints(
-        pixels.to_vec(),
-        width as u32,
-        height as u32,
-        &mut hints,
-    ) {
-        Ok(results) => results.iter().filter_map(raw_bytes).collect(),
-        Err(_) => Vec::new(),
-    }
-}
-
-/// The payload as bytes. `getText()` is useless here: the decoder guesses a
-/// character set and turns binary into mangled text (50 bytes of 0xC3 came
-/// back as 100 chars). rxing exposes the byte-mode payload via
-/// `getRawBytes()`; prefer explicit byte segments when it provides them.
-/// Either way the frame CRC rejects anything that comes out wrong.
-fn raw_bytes(r: &RXingResult) -> Option<Vec<u8>> {
-    if let Some(RXingResultMetadataValue::ByteSegments(segs)) = r
-        .getRXingResultMetadata()
-        .get(&RXingResultMetadataType::BYTE_SEGMENTS)
-    {
-        return Some(segs.concat());
-    }
-    let raw = r.getRawBytes();
-    (!raw.is_empty()).then(|| raw.to_vec())
+    courierqr_core::scan::decode_all(pixels, width as u32, height as u32)
 }
 
 #[cfg(test)]

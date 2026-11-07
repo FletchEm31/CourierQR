@@ -37,11 +37,13 @@ mod error;
 pub mod frame;
 mod payload;
 mod receiver;
+#[cfg(feature = "scan")]
+pub mod scan;
 mod sender;
 
 pub use crypto::{
     DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, OpenKey, SealKey, fingerprint,
-    generate_device_keys, validate_public_key,
+    generate_device_keys, public_key_of, validate_public_key,
 };
 pub use error::{Error, Result};
 pub use frame::FrameError;

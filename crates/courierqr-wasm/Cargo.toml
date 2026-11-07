@@ -11,9 +11,12 @@ repository.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-courierqr-core = { path = "../courierqr-core" }
+courierqr-core = { path = "../courierqr-core", features = ["scan"] }
 # "custom": on wasm32-unknown-unknown, randomness comes from the page's
 # crypto.getRandomValues via an imported function (see `host_random`).
 getrandom = { version = "0.2", features = ["custom"] }
 qrcode = { version = "0.14.1", default-features = false }
+
+[dev-dependencies]
+# examples/scanbench.rs compares detection strategies directly.
 rxing = { version = "0.9.3", default-features = false, features = ["decoders", "multi_barcode_readers", "encoding_rs", "qrcode"] }
