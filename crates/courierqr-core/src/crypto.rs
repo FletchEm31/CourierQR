@@ -1,0 +1,119 @@
+//! Encryption via the [age](https://age-encryption.org) format.
+//!
+//! We deliberately don't invent our own envelope: age gives us chunked
+//! ChaCha20-Poly1305 with a reviewed header format, and two key modes that
+//! map well onto CourierQR:
+//!
+//! * **Passphrase** (scrypt): type the same passphrase on both devices.
+//! * **Paired keys** (X25519): each receiving device generates an identity
+//!   once and shows its *public* key to the sender. Displaying a public key
+//!   on screen is harmless, so pairing needs no secret channel.
+
+use std::str::FromStr;
+
+use age::secrecy::{ExposeSecret, SecretString};
+
+use crate::{Error, Result};
+
+/// scrypt cost (log2 N) used for passphrase mode unless overridden.
+///
+/// 16 => 64 MiB of RAM per attempt. age's own default auto-calibrates to
+/// ~1s on the *encrypting* machine (often 18 = 256 MiB), which can be
+/// painful in a phone browser. With a strong passphrase 16 is plenty.
+pub const DEFAULT_SCRYPT_WORK_FACTOR: u8 = 16;
+
+/// Highest scrypt cost a receiver will attempt. Caps how much CPU/RAM a
+/// hostile header can make the receiver burn.
+pub const MAX_SCRYPT_WORK_FACTOR: u8 = 20;
+
+/// How the sender locks the file.
+#[derive(Clone)]
+pub enum SealKey {
+    Passphrase {
+        passphrase: SecretString,
+        work_factor: u8,
+    },
+    /// An `age1...` X25519 public key from a paired receiver.
+    Recipient(String),
+}
+
+impl SealKey {
+    pub fn passphrase(passphrase: impl Into<String>) -> Self {
+        SealKey::Passphrase {
+            passphrase: SecretString::from(passphrase.into()),
+            work_factor: DEFAULT_SCRYPT_WORK_FACTOR,
+        }
+    }
+
+    pub fn recipient(public_key: impl Into<String>) -> Self {
+        SealKey::Recipient(public_key.into())
+    }
+}
+
+/// How the receiver unlocks the file.
+#[derive(Clone)]
+pub enum OpenKey {
+    Passphrase(SecretString),
+    /// An `AGE-SECRET-KEY-1...` identity kept on the receiving device.
+    Identity(SecretString),
+}
+
+impl OpenKey {
+    pub fn passphrase(passphrase: impl Into<String>) -> Self {
+        OpenKey::Passphrase(SecretString::from(passphrase.into()))
+    }
+
+    pub fn identity(secret_key: impl Into<String>) -> Self {
+        OpenKey::Identity(SecretString::from(secret_key.into()))
+    }
+}
+
+/// A freshly generated device keypair for paired mode.
+pub struct DeviceKeys {
+    /// `AGE-SECRET-KEY-1...` — never leaves the receiving device.
+    pub secret: SecretString,
+    /// `age1...` — safe to display as a QR code for the sender to scan.
+    pub public: String,
+}
+
+/// Generate an X25519 identity for a receiving device.
+pub fn generate_device_keys() -> DeviceKeys {
+    let identity = age::x25519::Identity::generate();
+    DeviceKeys {
+        public: identity.to_public().to_string(),
+        secret: identity.to_string(),
+    }
+}
+
+pub(crate) fn seal(key: &SealKey, plaintext: &[u8]) -> Result<Vec<u8>> {
+    match key {
+        SealKey::Passphrase {
+            passphrase,
+            work_factor,
+        } => {
+            let mut r = age::scrypt::Recipient::new(passphrase.clone());
+            r.set_work_factor(*work_factor);
+            Ok(age::encrypt(&r, plaintext)?)
+        }
+        SealKey::Recipient(pk) => {
+            let r = age::x25519::Recipient::from_str(pk.trim())
+                .map_err(|e| Error::BadKey(e.to_string()))?;
+            Ok(age::encrypt(&r, plaintext)?)
+        }
+    }
+}
+
+pub(crate) fn open(key: &OpenKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
+    match key {
+        OpenKey::Passphrase(passphrase) => {
+            let mut id = age::scrypt::Identity::new(passphrase.clone());
+            id.set_max_work_factor(MAX_SCRYPT_WORK_FACTOR);
+            Ok(age::decrypt(&id, ciphertext)?)
+        }
+        OpenKey::Identity(sk) => {
+            let id = age::x25519::Identity::from_str(sk.expose_secret().trim())
+                .map_err(|e| Error::BadKey(e.to_string()))?;
+            Ok(age::decrypt(&id, ciphertext)?)
+        }
+    }
+}

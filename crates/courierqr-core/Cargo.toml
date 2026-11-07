@@ -1,0 +1,15 @@
+[package]
+name = "courierqr-core"
+version = "0.1.0"
+description = "Core pipeline for CourierQR: compress, encrypt (age), and fountain-code files into self-describing optical frames."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+age = "0.12.1"
+crc32fast = "1.5.4"
+miniz_oxide = "0.9.1"
+rand = "0.10.3"
+raptorq = "2.0.1"
+thiserror = "2.0.21"
