@@ -103,6 +103,30 @@ camera ─► <video> ─► createImageBitmap ─► Web Worker ─► Offscree
   deploy is a new, explicit version. The CSP is `default-src 'none'` plus same-origin script,
   `wasm-unsafe-eval`, and nothing else.
 
+### Pairing
+
+The phone generates an X25519 identity inside WebAssembly (randomness from
+`crypto.getRandomValues`) and stores the secret in IndexedDB. Only the public key leaves the
+phone, by any channel, because it isn't secret. The risk is *substitution*: someone swapping
+in their own key on the way. Both sides therefore show the same **fingerprint**: 60 bits of
+`SHA-256("courierqr-fingerprint-v1:" ‖ key)` in Crockford base32 (`EEHD-GY2Z-XADG`),
+computed by the same Rust function on both devices and pinned by a test vector. `pair add`
+won't save a device until you confirm the match. The bech32 checksum in `age1…` keys catches
+typing mistakes before that.
+
+On completion the phone tries its device key first. age reports "no matching keys" for a
+passphrase-sealed file, and the app then falls back to the passphrase prompt.
+
+**Storage caveats:**
+- **Shared origin on GitHub Pages.** Browser storage is per origin, and every Pages site on
+  an account shares `<user>.github.io`. Any *other* Pages site you publish on the same
+  account could read the stored device key. Keep CourierQR the only Pages site on that
+  account, or give it its own origin (a custom domain).
+- **iOS eviction.** Safari can clear storage for sites you haven't visited in a while. Apps
+  added to the home screen are exempt, and the app also requests persistent storage. If the
+  key is lost, create a new one and re-pair; files already sent to the old key can't be
+  opened.
+
 ### What the camera tests showed
 
 Synthetic phone-camera footage of the sender (keystone, ±3° rotation, Gaussian blur, 72%
@@ -121,8 +145,8 @@ what matters. That's why the defaults are now 2×2 × v15.
 
 ## Known follow-ups
 
-- Paired-key mode in the phone app is import-only (load an identity file). Next: generate
-  the keypair on the phone and show its public key as a QR code for the sender.
+- Desktop webcam receiver (stage 4). It would also let `pair add` scan the phone's key QR
+  directly instead of copying the text.
 - Real-phone tuning (iOS Safari focus behaviour, frame rates). The synthetic tests are a
   floor, not a promise.
 - Tune the scrypt cost against real phone browser timings.

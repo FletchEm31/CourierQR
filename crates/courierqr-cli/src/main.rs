@@ -1,6 +1,7 @@
 //! `courierqr` — send files as animated QR codes, export frames, decode captures.
 
 mod decode;
+mod pair;
 mod render;
 #[cfg(feature = "window")]
 mod window;
@@ -75,6 +76,11 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
+    /// Manage paired devices (phones you can send to without a passphrase).
+    Pair {
+        #[command(subcommand)]
+        cmd: PairCmd,
+    },
     /// Create a device keypair for paired mode. Prints the public key.
     Keygen {
         /// Where to write the secret identity (created with 0600 permissions).
@@ -83,10 +89,29 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum PairCmd {
+    /// Pair a device: paste the age1… key from the phone's "Device key" screen.
+    Add {
+        /// Your name for the device, e.g. "phone".
+        name: String,
+        /// The device's public key (age1…).
+        public_key: String,
+        /// Skip the fingerprint confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List paired devices with their fingerprints.
+    List,
+    /// Forget a paired device.
+    Remove { name: String },
+}
+
 #[derive(Args)]
 struct SealArgs {
-    /// Encrypt to a paired device's public key (`age1...`) instead of a passphrase.
-    #[arg(long, value_name = "AGE1_PUBLIC_KEY")]
+    /// Encrypt to a paired device (name from `pair list`) or an age1… public
+    /// key, instead of a passphrase.
+    #[arg(long, value_name = "DEVICE|AGE1_KEY")]
     to: Option<String>,
     /// scrypt cost (log2) for passphrase mode. Higher = slower to brute-force
     /// and slower for the receiver to open.
@@ -158,6 +183,15 @@ fn main() -> Result<()> {
             out,
             force,
         } => receive(&images, &key, &out, force),
+        Cmd::Pair { cmd } => match cmd {
+            PairCmd::Add {
+                name,
+                public_key,
+                yes,
+            } => pair::add(&name, &public_key, yes),
+            PairCmd::List => pair::list(),
+            PairCmd::Remove { name } => pair::remove(&name),
+        },
         Cmd::Keygen { out } => keygen(&out),
     }
 }
@@ -179,7 +213,11 @@ fn prepare(file: &Path, args: &SealArgs, layout: &Layout) -> Result<Transmission
         .context("file name must be valid UTF-8")?;
 
     let key = match &args.to {
-        Some(pk) => SealKey::recipient(pk.clone()),
+        Some(to) => {
+            let (pk, label) = pair::resolve(to)?;
+            eprintln!("encrypting to {label}");
+            SealKey::recipient(pk)
+        }
         None => SealKey::Passphrase {
             passphrase: passphrase(true)?.into(),
             work_factor: args.scrypt_cost,

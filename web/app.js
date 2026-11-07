@@ -1,7 +1,7 @@
 // CourierQR receiver UI: camera -> worker (wasm) -> unlock -> save.
 
 const $ = (id) => document.getElementById(id);
-const views = { scan: $("scan"), unlock: $("unlock"), done: $("done") };
+const views = { scan: $("scan"), pair: $("pair"), unlock: $("unlock"), done: $("done") };
 
 const MAX_DIM = 1280; // longest side handed to the decoder
 
@@ -26,6 +26,7 @@ function startWorker() {
     else if (m.type === "error") fatal(m.message);
     else if (m.type === "progress") onProgress(m);
     else if (m.type === "opened") onOpened(m);
+    else if (m.type === "key") onKey(m);
   };
   worker.onerror = (e) => fatal(`Decoder crashed: ${e.message || "unknown error"}`);
 }
@@ -137,11 +138,22 @@ function onProgress(m) {
     $("pieces").textContent = "That QR code isn't from CourierQR";
   }
 
-  if (m.complete) {
+  if (m.complete && running) {
     stopCamera();
     $("unlock-sub").textContent = `${m.received} pieces received. The file is still encrypted; unlock it on this device.`;
-    show("unlock");
-    $("pass").focus();
+    $("unlock-key").hidden = true;
+    loadKey().then((key) => {
+      if (key) {
+        // Paired phone: try the device key first, silently.
+        $("unlock-sub").textContent = `${m.received} pieces received. Unlocking with this phone's device key…`;
+        show("unlock");
+        unlocking(true);
+        worker.postMessage({ type: "open", identity: key.secret, auto: true });
+      } else {
+        show("unlock");
+        $("pass").focus();
+      }
+    });
   }
 }
 
@@ -171,6 +183,12 @@ function unlocking(on) {
 
 function onOpened(m) {
   unlocking(false);
+  if (!m.ok && m.auto) {
+    // Not addressed to this phone's key: fall back to the passphrase.
+    $("unlock-key").hidden = false;
+    $("pass").focus();
+    return;
+  }
   if (!m.ok) {
     $("unlock-err").textContent =
       m.code === -2 ? "That didn't unlock it. Wrong passphrase or key." : m.error;
@@ -246,6 +264,102 @@ function safeName(name) {
 function formatBytes(n) {
   return n < 1024 ? `${n} bytes` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(2)} MB`;
 }
+
+// ---------------------------------------------------------------- device key
+
+// The secret half lives in IndexedDB on this phone and nowhere else.
+const DB = "courierqr";
+function idb(mode, fn) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open(DB, 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("keys");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const tx = open.result.transaction("keys", mode);
+      const req = fn(tx.objectStore("keys"));
+      tx.oncomplete = () => resolve(req?.result);
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+}
+const loadKey = () => idb("readonly", (st) => st.get("device")).catch(() => null);
+const saveKey = (k) => idb("readwrite", (st) => st.put(k, "device"));
+const deleteKey = () => idb("readwrite", (st) => st.delete("device"));
+
+let shownKey = null;
+
+async function openPairView() {
+  stopCamera();
+  $("idle").hidden = false;
+  $("stop").hidden = true;
+  const key = await loadKey();
+  $("nokey").hidden = !!key;
+  $("haskey").hidden = !key;
+  if (key) worker.postMessage({ type: "keyinfo", public: key.public });
+  show("pair");
+}
+
+async function onKey(m) {
+  if (m.secret) {
+    await saveKey({ secret: m.secret, public: m.public, created: Date.now() });
+    // Ask the browser not to evict our storage (matters most on iOS).
+    navigator.storage?.persist?.().catch(() => {});
+    $("nokey").hidden = true;
+    $("haskey").hidden = false;
+  }
+  shownKey = m.public;
+  $("paircmd").textContent = `courierqr pair add phone ${m.public}`;
+  $("fp").textContent = m.fingerprint;
+  $("sharekey").hidden = !navigator.share;
+  drawQr($("keyqr"), m.qr);
+}
+
+function drawQr(canvas, qr) {
+  const ctx = canvas.getContext("2d");
+  const quiet = 4;
+  const n = qr.width + 2 * quiet;
+  const scale = Math.floor(canvas.width / n);
+  const off = Math.floor((canvas.width - n * scale) / 2);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#000";
+  for (let y = 0; y < qr.width; y++) {
+    for (let x = 0; x < qr.width; x++) {
+      if (qr.modules[y * qr.width + x]) ctx.fillRect(off + (x + quiet) * scale, off + (y + quiet) * scale, scale, scale);
+    }
+  }
+}
+
+$("keybtn").addEventListener("click", openPairView);
+$("genkey").addEventListener("click", () => worker.postMessage({ type: "keygen" }));
+$("pairdone").addEventListener("click", () => show("scan"));
+$("copykey").addEventListener("click", async () => {
+  await navigator.clipboard.writeText($("paircmd").textContent);
+  $("copykey").textContent = "Copied ✓";
+  setTimeout(() => ($("copykey").textContent = "Copy command"), 1500);
+});
+$("sharekey").addEventListener("click", () =>
+  navigator.share({ text: $("paircmd").textContent }).catch(() => {}),
+);
+// Two taps to delete: no browser dialogs.
+let delArmed = null;
+$("delkey").addEventListener("click", async () => {
+  if (!delArmed) {
+    $("delkey").textContent = "Tap again to delete. Files sent to this key can't be opened after";
+    delArmed = setTimeout(() => {
+      delArmed = null;
+      $("delkey").textContent = "Delete this device key";
+    }, 4000);
+    return;
+  }
+  clearTimeout(delArmed);
+  delArmed = null;
+  await deleteKey();
+  shownKey = null;
+  $("delkey").textContent = "Delete this device key";
+  $("nokey").hidden = false;
+  $("haskey").hidden = true;
+});
 
 // ---------------------------------------------------------------- reset
 

@@ -53,9 +53,10 @@ B=target/release/courierqr
 $B send notes.md
 #   Space = pause · ↑/↓ = faster/slower · Esc/Q = quit (progress also prints in the terminal)
 
-# Paired mode: make a key on the receiving device once, then send to its public key.
-$B keygen -o ~/.config/courierqr/device.key        # prints age1...
-$B send notes.md --to age1...
+# Paired mode (no passphrases): pair the phone once, then send by name.
+$B pair add phone age1...          # from the phone's "Device key" screen; confirm the fingerprint
+$B send notes.md --to phone
+$B pair list                       # names, fingerprints, keys
 
 # No camera yet? Export frames, or decode photos/screenshots/video stills.
 $B export notes.md -o frames/
@@ -86,6 +87,15 @@ and nothing leaves the phone.
 3. **Receive:** run `courierqr send file.md` on the computer, tap **Start camera**, and point
    the phone at the codes. The bar fills as pieces arrive, in any order. When it's full, type
    the passphrase and then save, share or copy the file.
+
+**Pair the phone (once):** tap **Device key → Create device key**. The phone generates a
+keypair inside WebAssembly and keeps the secret half in its own storage. It shows a
+`courierqr pair add phone age1…` command; run that on your computer (copy it, text it to
+yourself, or type it, since the public key isn't secret) and check that both screens show
+the same fingerprint, like `EEHD-GY2Z-XADG`. From then on, `courierqr send file --to phone`
+needs no passphrase: the phone unlocks the file by itself as soon as the last piece arrives.
+Files sent with a passphrase still prompt for one. Install the app to your home screen so iOS
+doesn't clear the stored key.
 
 The app is locked down: a strict Content-Security-Policy allows no outside origins at all,
 decryption happens in a Web Worker inside WebAssembly, and the decrypted bytes are wiped

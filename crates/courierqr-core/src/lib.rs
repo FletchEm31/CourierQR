@@ -40,8 +40,8 @@ mod receiver;
 mod sender;
 
 pub use crypto::{
-    DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, OpenKey, SealKey,
-    generate_device_keys,
+    DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, OpenKey, SealKey, fingerprint,
+    generate_device_keys, validate_public_key,
 };
 pub use error::{Error, Result};
 pub use frame::FrameError;

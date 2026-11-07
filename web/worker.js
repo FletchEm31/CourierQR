@@ -4,9 +4,11 @@
 // in:  {type:"frame", bitmap: ImageBitmap, maxDim}   (bitmap is transferred)
 //      {type:"open", passphrase?: string, identity?: string}
 //      {type:"reset"}
+//      {type:"keygen"} | {type:"keyinfo", public}
 // out: {type:"ready"} | {type:"error", message}
 //      {type:"progress", status, ms, received, needed, complete, lastFound, lastNew, totalCodes, totalRejected}
-//      {type:"opened", ok, error?, name?, data?: ArrayBuffer}
+//      {type:"opened", ok, error?, name?, data?: ArrayBuffer, auto?}
+//      {type:"key", secret?, public, fingerprint, qr: {width, modules}}
 
 import { CourierQR, rgbaToGray } from "./courierqr.js";
 
@@ -32,6 +34,12 @@ onmessage = ({ data: msg }) => {
       return onFrame(msg.bitmap, msg.maxDim || 1280);
     case "open":
       return onOpen(msg);
+    case "keygen": {
+      const k = cq.generateKeys();
+      return postMessage({ type: "key", ...k, fingerprint: cq.fingerprint(k.public), qr: cq.qr(k.public) });
+    }
+    case "keyinfo":
+      return postMessage({ type: "key", public: msg.public, fingerprint: cq.fingerprint(msg.public), qr: cq.qr(msg.public) });
     case "reset":
       cq.reset();
       return postMessage({ type: "progress", status: 5, ms: 0, ...cq.progress() });
@@ -56,9 +64,9 @@ function onFrame(bitmap, maxDim) {
   postMessage({ type: "progress", status, ms: performance.now() - t0, ...cq.progress() });
 }
 
-function onOpen({ passphrase, identity }) {
+function onOpen({ passphrase, identity, auto = false }) {
   const r = identity != null ? cq.openIdentity(identity) : cq.openPassphrase(passphrase ?? "");
-  if (!r.ok) return postMessage({ type: "opened", ok: false, error: r.error, code: r.code });
+  if (!r.ok) return postMessage({ type: "opened", ok: false, error: r.error, code: r.code, auto });
   const { name, data } = cq.takeFile();
-  postMessage({ type: "opened", ok: true, name, data: data.buffer }, [data.buffer]);
+  postMessage({ type: "opened", ok: true, name, data: data.buffer, auto }, [data.buffer]);
 }

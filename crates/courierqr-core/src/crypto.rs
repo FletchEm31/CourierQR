@@ -117,3 +117,72 @@ pub(crate) fn open(key: &OpenKey, ciphertext: &[u8]) -> Result<Vec<u8>> {
         }
     }
 }
+
+/// Check that `public_key` is a valid `age1...` X25519 recipient (bech32
+/// checksum included, so most typos are caught) and return it normalized.
+pub fn validate_public_key(public_key: &str) -> Result<String> {
+    let pk = public_key.trim().to_ascii_lowercase();
+    age::x25519::Recipient::from_str(&pk).map_err(|e| Error::BadKey(e.to_string()))?;
+    Ok(pk)
+}
+
+/// Short, human-comparable fingerprint of a public key, e.g. `K7QM-2XRA-9DPW`.
+///
+/// Pairing moves the public key over whatever channel is handy (scan, copy,
+/// email to yourself). That channel doesn't need to be secret, but it must
+/// not be able to *swap* the key — so both devices show this fingerprint and
+/// you compare them by eye. 60 bits of SHA-256: far beyond what anyone can
+/// grind a look-alike key for.
+pub fn fingerprint(public_key: &str) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford: no I L O U
+    let pk = validate_public_key(public_key)?;
+    let digest = Sha256::new()
+        .chain_update(b"courierqr-fingerprint-v1:")
+        .chain_update(pk.as_bytes())
+        .finalize();
+    let bits = u64::from_be_bytes(digest[..8].try_into().unwrap()) >> 4; // top 60 bits
+    let chars: Vec<u8> = (0..12)
+        .rev()
+        .map(|i| ALPHABET[((bits >> (i * 5)) & 31) as usize])
+        .collect();
+    let s = std::str::from_utf8(&chars).unwrap();
+    Ok(format!("{}-{}-{}", &s[0..4], &s[4..8], &s[8..12]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_is_stable_and_case_insensitive() {
+        let keys = generate_device_keys();
+        let a = fingerprint(&keys.public).unwrap();
+        assert_eq!(a, fingerprint(&keys.public.to_uppercase()).unwrap());
+        assert_eq!(a, fingerprint(&format!("  {}\n", keys.public)).unwrap());
+        assert_eq!(a.len(), 14);
+        assert!(
+            a.chars()
+                .all(|c| c == '-' || "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c))
+        );
+        assert_ne!(a, fingerprint(&generate_device_keys().public).unwrap());
+    }
+
+    #[test]
+    fn typos_are_caught_by_the_checksum() {
+        let pk = generate_device_keys().public;
+        let mut typo = pk.clone().into_bytes();
+        let i = 20;
+        typo[i] = if typo[i] == b'q' { b'p' } else { b'q' };
+        assert!(validate_public_key(std::str::from_utf8(&typo).unwrap()).is_err());
+        assert!(validate_public_key("age1notakey").is_err());
+        assert!(validate_public_key(&pk).is_ok());
+    }
+
+    #[test]
+    fn known_vector() {
+        // Pin the format so phone and desktop can never silently disagree.
+        let pk = "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p";
+        assert_eq!(fingerprint(pk).unwrap(), "8SP0-RP4E-HSG6");
+    }
+}

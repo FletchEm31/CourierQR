@@ -133,6 +133,30 @@ export class CourierQR {
   reset() {
     this.#x.cq_reset();
   }
+
+  /** New X25519 device keypair: {secret: "AGE-SECRET-KEY-1…", public: "age1…"}. */
+  generateKeys() {
+    const x = this.#x;
+    x.cq_generate_keys();
+    const secret = fromUtf8.decode(this.#copyOut(x.cq_key_secret_ptr(), x.cq_key_secret_len()));
+    const pub = fromUtf8.decode(this.#copyOut(x.cq_key_public_ptr(), x.cq_key_public_len()));
+    x.cq_forget_keys();
+    return { secret, public: pub };
+  }
+
+  /** Fingerprint shown on both devices (e.g. "K7QM-2XRA-9DPW"), or null if invalid. */
+  fingerprint(publicKey) {
+    const x = this.#x;
+    const rc = this.#withBytes(utf8.encode(publicKey), (p, n) => x.cq_fingerprint(p, n));
+    return rc === 0 ? fromUtf8.decode(this.#copyOut(x.cq_text_ptr(), x.cq_text_len())) : null;
+  }
+
+  /** QR matrix for text: {width, modules: Uint8Array(width²), 1 = dark}, or null. */
+  qr(text) {
+    const x = this.#x;
+    const width = this.#withBytes(utf8.encode(text), (p, n) => x.cq_qr_encode(p, n));
+    return width > 0 ? { width, modules: this.#copyOut(x.cq_qr_ptr(), width * width) } : null;
+  }
 }
 
 /**

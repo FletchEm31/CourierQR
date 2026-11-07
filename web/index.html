@@ -47,13 +47,41 @@
     <div class="controls">
       <select id="camera" aria-label="Camera" hidden></select>
       <button id="stop" hidden>Stop</button>
+      <button id="keybtn">Device key</button>
     </div>
+  </section>
+
+  <!-- Device key (pairing) -->
+  <section id="pair" class="view" hidden>
+    <h2>Device key</h2>
+    <div id="nokey">
+      <p class="muted">Pair this phone once and you'll never type a passphrase again. The phone
+        makes a keypair: the <b>secret</b> half never leaves this phone, and the <b>public</b>
+        half goes to your computer.</p>
+      <button id="genkey" class="primary">Create device key</button>
+    </div>
+    <div id="haskey" hidden>
+      <p class="muted">On your computer, run:</p>
+      <pre id="paircmd" class="cmd"></pre>
+      <p class="muted">Then check that the computer shows this fingerprint:</p>
+      <p id="fp" class="fp"></p>
+      <canvas id="keyqr" width="232" height="232" aria-label="Public key QR code"></canvas>
+      <div class="actions">
+        <button id="copykey">Copy command</button>
+        <button id="sharekey" hidden>Share…</button>
+      </div>
+      <p class="muted small">The public key isn't secret, so text it or email it to yourself if
+        that's easier. The fingerprint check is what proves it wasn't swapped on the way.</p>
+      <button id="delkey" class="link danger">Delete this device key</button>
+    </div>
+    <button id="pairdone" class="link">Back to scanning</button>
   </section>
 
   <!-- 2. Unlock -->
   <section id="unlock" class="view" hidden>
     <h2>Got everything 🎉</h2>
     <p class="muted" id="unlock-sub">The file is still encrypted. Unlock it on this device.</p>
+    <p class="muted" id="unlock-key" hidden>It wasn't sent to this phone's device key, so it needs a passphrase.</p>
 
     <form id="pass-form" autocomplete="off">
       <label for="pass">Passphrase</label>

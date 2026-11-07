@@ -16,6 +16,7 @@
 
 use std::cell::RefCell;
 
+use courierqr_core::secrecy::ExposeSecret;
 use courierqr_core::{Accepted, Error, FrameError, OpenKey, ReceivedFile, Receiver};
 
 pub mod scan;
@@ -33,6 +34,12 @@ struct State {
     /// Running totals for the UI.
     total_codes: u32,
     total_rejected: u32,
+    /// Freshly generated device keypair (secret, public), until forgotten.
+    keys: Option<(String, String)>,
+    /// Output of `cq_fingerprint`.
+    text: String,
+    /// Output of `cq_qr_encode`: width*width modules, 1 = dark.
+    qr: Vec<u8>,
 }
 
 thread_local! {
@@ -317,6 +324,110 @@ pub extern "C" fn cq_forget_file() {
             f.data.fill(0);
         }
     });
+}
+
+// ---------------------------------------------------------------- pairing
+
+/// Generate an X25519 device keypair (randomness from `host_random`).
+/// Read it with `cq_key_*`, store the secret, then call `cq_forget_keys`.
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_generate_keys() {
+    let k = courierqr_core::generate_device_keys();
+    with(|s| s.keys = Some((k.secret.expose_secret().to_owned(), k.public)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_key_secret_ptr() -> *const u8 {
+    with(|s| s.keys.as_ref().map_or(std::ptr::null(), |k| k.0.as_ptr()))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_key_secret_len() -> usize {
+    with(|s| s.keys.as_ref().map_or(0, |k| k.0.len()))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_key_public_ptr() -> *const u8 {
+    with(|s| s.keys.as_ref().map_or(std::ptr::null(), |k| k.1.as_ptr()))
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_key_public_len() -> usize {
+    with(|s| s.keys.as_ref().map_or(0, |k| k.1.len()))
+}
+
+/// Wipe the generated keypair from wasm memory.
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_forget_keys() {
+    with(|s| {
+        if let Some((secret, _)) = s.keys.take() {
+            let mut b = secret.into_bytes();
+            b.fill(0);
+        }
+    });
+}
+
+/// Fingerprint of an `age1...` public key into the text buffer
+/// (`cq_text_ptr/len`). Returns 0, or `open_status::BAD_KEY` if invalid.
+///
+/// # Safety
+/// `ptr` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cq_fingerprint(ptr: *const u8, len: usize) -> i32 {
+    let pk = String::from_utf8_lossy(unsafe { slice(ptr, len) }).into_owned();
+    with(|s| match courierqr_core::fingerprint(&pk) {
+        Ok(fp) => {
+            s.text = fp;
+            0
+        }
+        Err(e) => {
+            s.last_error = e.to_string();
+            open_status::BAD_KEY
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_text_ptr() -> *const u8 {
+    with(|s| s.text.as_ptr())
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_text_len() -> usize {
+    with(|s| s.text.len())
+}
+
+/// Encode bytes as a QR code (ECC M) in **pure byte mode** at the smallest
+/// version that fits. Byte mode matters: "optimal" encoders switch to
+/// numeric mode for digit runs, and byte-only readers (like ours) would
+/// silently drop them — an `age1…2872…` key came back without its `2872`.
+/// Returns the width in modules (matrix is width² bytes at `cq_qr_ptr`,
+/// 1 = dark), or -1 if it doesn't fit any version.
+///
+/// # Safety
+/// `ptr` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cq_qr_encode(ptr: *const u8, len: usize) -> i32 {
+    use qrcode::{EcLevel, QrCode, Version, bits::Bits};
+    let data = unsafe { slice(ptr, len) };
+    let code = (1..=40).find_map(|v| {
+        let mut bits = Bits::new(Version::Normal(v));
+        bits.push_byte_data(data).ok()?;
+        bits.push_terminator(EcLevel::M).ok()?;
+        QrCode::with_bits(bits, EcLevel::M).ok()
+    });
+    match code {
+        Some(code) => with(|s| {
+            s.qr = code
+                .to_colors()
+                .iter()
+                .map(|c| (*c == qrcode::Color::Dark) as u8)
+                .collect();
+            code.width() as i32
+        }),
+        None => -1,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_qr_ptr() -> *const u8 {
+    with(|s| s.qr.as_ptr())
 }
 
 // ---------------------------------------------------------------- randomness

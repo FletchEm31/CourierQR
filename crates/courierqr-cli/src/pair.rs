@@ -1,0 +1,173 @@
+//! Paired devices: named `age1...` public keys the sender can encrypt to.
+//!
+//! Stored one per line as `<name> <age1...>` in
+//! `$COURIERQR_CONFIG_DIR`, else `$XDG_CONFIG_HOME/courierqr`, else
+//! `~/.config/courierqr`, file `devices`. Only public keys live here —
+//! nothing in this file is secret.
+
+use std::fs;
+use std::io::{BufRead, Write};
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
+use courierqr_core::{fingerprint, validate_public_key};
+
+pub fn config_dir() -> Result<PathBuf> {
+    if let Some(d) = std::env::var_os("COURIERQR_CONFIG_DIR") {
+        return Ok(PathBuf::from(d));
+    }
+    if let Some(d) = std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(d).join("courierqr"));
+    }
+    let home = std::env::var_os("HOME").context("can't find your home directory (set HOME)")?;
+    Ok(PathBuf::from(home).join(".config").join("courierqr"))
+}
+
+fn devices_file() -> Result<PathBuf> {
+    Ok(config_dir()?.join("devices"))
+}
+
+/// (name, public key) pairs, in file order.
+pub fn load() -> Result<Vec<(String, String)>> {
+    let path = devices_file()?;
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(char::is_whitespace))
+        .map(|(n, k)| (n.to_owned(), k.trim().to_owned()))
+        .collect())
+}
+
+fn save(devices: &[(String, String)]) -> Result<()> {
+    let path = devices_file()?;
+    fs::create_dir_all(path.parent().unwrap())?;
+    let mut out =
+        String::from("# CourierQR paired devices: <name> <age1 public key>. Public keys only.\n");
+    for (n, k) in devices {
+        out.push_str(&format!("{n} {k}\n"));
+    }
+    fs::write(&path, out).with_context(|| format!("writing {}", path.display()))
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 32
+        && !name.starts_with("age1")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+pub fn add(name: &str, public_key: &str, yes: bool) -> Result<()> {
+    if !valid_name(name) {
+        bail!("device names are 1–32 letters, digits, '-' or '_' (and can't start with age1)");
+    }
+    let pk = validate_public_key(public_key).context(
+        "that isn't a valid age1… public key (a typo is the usual cause; the checksum caught it)",
+    )?;
+    let fp = fingerprint(&pk)?;
+
+    eprintln!("device:      {name}");
+    eprintln!("fingerprint: {fp}");
+    if !yes {
+        eprint!("Does your phone show exactly this fingerprint? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().lock().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "YES") {
+            bail!("not paired. If the fingerprints differ, the key was changed on the way here");
+        }
+    }
+
+    let mut devices = load()?;
+    devices.retain(|(n, _)| n != name);
+    devices.push((name.to_owned(), pk));
+    save(&devices)?;
+    eprintln!("paired. Send with: courierqr send <file> --to {name}");
+    Ok(())
+}
+
+pub fn list() -> Result<()> {
+    let devices = load()?;
+    if devices.is_empty() {
+        eprintln!("no paired devices yet: courierqr pair add <name> <age1…>");
+    }
+    for (n, k) in devices {
+        println!(
+            "{n:<16} {}  {k}",
+            fingerprint(&k).unwrap_or_else(|_| "INVALID".into())
+        );
+    }
+    Ok(())
+}
+
+pub fn remove(name: &str) -> Result<()> {
+    let mut devices = load()?;
+    let before = devices.len();
+    devices.retain(|(n, _)| n != name);
+    if devices.len() == before {
+        bail!("no paired device named {name:?}");
+    }
+    save(&devices)?;
+    eprintln!("removed {name}");
+    Ok(())
+}
+
+/// `--to` accepts a raw `age1...` key or a paired device name.
+/// Returns (public key, label for messages).
+pub fn resolve(to: &str) -> Result<(String, String)> {
+    if to.trim().to_ascii_lowercase().starts_with("age1") {
+        let pk = validate_public_key(to)?;
+        let fp = fingerprint(&pk)?;
+        return Ok((pk, format!("key {fp}")));
+    }
+    let devices = load()?;
+    match devices.into_iter().find(|(n, _)| n == to) {
+        Some((n, k)) => {
+            let fp = fingerprint(&k)?;
+            Ok((k, format!("device '{n}' ({fp})")))
+        }
+        None => bail!("no paired device named {to:?} (see: courierqr pair list)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use courierqr_core::generate_device_keys;
+
+    #[test]
+    fn add_list_resolve_remove() {
+        let dir = std::env::temp_dir().join(format!("cqr-pair-test-{}", std::process::id()));
+        // SAFETY: only this test touches this variable.
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &dir) };
+
+        let k1 = generate_device_keys().public;
+        let k2 = generate_device_keys().public;
+        add("phone", &k1, true).unwrap();
+        add("tablet", &k2.to_uppercase(), true).unwrap(); // normalized on save
+        assert_eq!(
+            load().unwrap(),
+            vec![("phone".into(), k1.clone()), ("tablet".into(), k2.clone())]
+        );
+
+        assert_eq!(resolve("phone").unwrap().0, k1);
+        assert_eq!(resolve(&k2).unwrap().0, k2);
+        assert!(resolve("nobody").is_err());
+
+        add("phone", &k2, true).unwrap(); // re-pairing replaces
+        assert_eq!(resolve("phone").unwrap().0, k2);
+        remove("tablet").unwrap();
+        assert!(remove("tablet").is_err());
+
+        assert!(add("bad name!", &k1, true).is_err());
+        assert!(add("x", "age1typo", true).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+}
