@@ -33,10 +33,10 @@ impl Logo {
     }
 }
 
-/// The line under COURIER. Alternatives that fit (53 columns):
+/// The line under COURIER (heavy rule). Alternatives that fit (53 columns):
 /// "encrypted over light", "air-gapped · end-to-end encrypted",
 /// "your keys stay home · only light crosses",
-/// "no network · no accounts · no metadata".
+/// "post-quantum encrypted · carried by light".
 pub const LOGOS: &[Logo] = &[
     Logo {
         name: "Courier QR",
@@ -49,7 +49,7 @@ pub const LOGOS: &[Logo] = &[
             r#"╚██████╗╚██████╔╝╚██████╔╝██║  ██║██║███████╗██║  ██║  ████║       ████║ ████████████╔═╝"#,
             r#" ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝  ████║       ████║ ████████████║"#,
             r#"                                                       ████║       ████║ ████╔═════████╗"#,
-            r#"───── post-quantum encrypted · carried by light ─────  ████║ ████╗ ████║ ████║     ████║"#,
+            r#"━━━━━━ no network · no accounts · no metadata ━━━━━━━  ████║ ████╗ ████║ ████║     ████║"#,
             r#"                                                       ╚═████████████╔═╝ ████║     ████║"#,
             r#"                                                         ████████████║   ████║     ████║"#,
             r#"                                                         ╚═════████══╝   ╚═══╝     ╚═══╝"#,
