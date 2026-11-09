@@ -35,6 +35,8 @@ pub(crate) struct DevicesTab {
     pub(crate) mode: Mode,
     /// Second press of `d` within this window deletes.
     delete_armed: Option<std::time::Instant>,
+    /// Show this computer's pairing code over the whole screen.
+    pub(crate) fullscreen: bool,
 }
 
 impl DevicesTab {
@@ -44,6 +46,7 @@ impl DevicesTab {
             selected: 0,
             mode: Mode::Browse,
             delete_armed: None,
+            fullscreen: false,
         };
         t.reload();
         t
@@ -88,6 +91,8 @@ pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
             KeyCode::Up => d.selected = d.selected.saturating_sub(1),
             KeyCode::Down => d.selected = (d.selected + 1).min(d.list.len().saturating_sub(1)),
             KeyCode::Char('a') => d.begin_add(),
+            KeyCode::Char('f') => d.fullscreen = !d.fullscreen,
+            KeyCode::Esc => d.fullscreen = false,
             KeyCode::Char('r') => {
                 d.reload();
                 app.toast("reloaded paired devices", false);
@@ -180,7 +185,13 @@ pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
 
 pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.devices.mode {
-        Mode::Browse => vec![("a", "pair a phone"), ("d d", "forget"), ("↑↓", "select")],
+        Mode::Browse if app.devices.fullscreen => vec![("esc", "back")],
+        Mode::Browse => vec![
+            ("a", "pair a phone"),
+            ("f", "full-screen pairing code"),
+            ("d d", "forget"),
+            ("↑↓", "select"),
+        ],
         Mode::Add { .. } => vec![
             ("tab", "next field"),
             ("enter", "check key"),
@@ -190,8 +201,51 @@ pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
 }
 
+/// This computer's key set is ~2 KB with the post-quantum key, so its QR
+/// code is big (v35-ish): give it the whole body.
+fn draw_fullscreen(app: &App, f: &mut Frame, area: Rect) {
+    let Some((pk, fp)) = &app.own_key else { return };
+    let [top, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    let code = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::L).ok();
+    let (w, h) = code
+        .as_ref()
+        .map(|c| ((c.width() + 8) as u16, (c.width() + 8).div_ceil(2) as u16))
+        .unwrap_or((0, 0));
+    let fits = w <= rest.width && h <= rest.height;
+    let note = if fits {
+        "  Phone: Keys → Scan computer's key, then compare fingerprints.  Esc to go back"
+            .to_string()
+    } else {
+        format!(
+            "  Too small to show it: needs {w}×{h} cells, have {}×{}. Zoom the terminal out (Ctrl -), or run `courierqr pair show --png key.png`.",
+            rest.width, rest.height
+        )
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" fingerprint {fp} "),
+                Style::new().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(note, Style::new().fg(if fits { TEXT } else { WARN })),
+        ])),
+        top,
+    );
+    if let (Some(code), true) = (code, fits) {
+        f.render_widget(
+            ratatui::widgets::Block::default()
+                .style(Style::new().bg(ratatui::style::Color::Rgb(255, 255, 255))),
+            rest,
+        );
+        draw_qr(f, rest, &code);
+    }
+}
+
 pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     let d = &app.devices;
+    if d.fullscreen {
+        return draw_fullscreen(app, f, area);
+    }
     let [left, right] =
         Layout::horizontal([Constraint::Min(40), Constraint::Length(50)]).areas(area);
 
@@ -218,11 +272,11 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             .list
             .iter()
             .map(|(n, k, fp)| {
-                let short = format!(
-                    "{}…{}",
-                    &k[..12.min(k.len())],
-                    &k[k.len().saturating_sub(6)..]
-                );
+                let short = if k.contains("age1pq1") {
+                    "post-quantum + classic".to_string()
+                } else {
+                    "classic only (re-pair for post-quantum)".to_string()
+                };
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {n:<14}"),
@@ -267,7 +321,12 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(block, right);
     match &app.own_key {
         Some((pk, fp)) => {
-            let qr = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::M).ok();
+            let qr = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::L)
+                .ok()
+                .filter(|c| {
+                    c.width() + 8 <= rin.width as usize
+                        && (c.width() + 8).div_ceil(2) + 5 <= rin.height as usize
+                });
             let qr_h = qr
                 .as_ref()
                 .map(|c| (c.width() + 8).div_ceil(2) as u16)
@@ -286,10 +345,17 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
                         ),
                     ]),
-                    Line::from(Span::styled(pk.clone(), Style::new().fg(MUTED))),
+                    Line::from(Span::styled(
+                        if pk.contains("age1pq1") {
+                            "keys: classic X25519 + post-quantum ML-KEM-768 hybrid"
+                        } else {
+                            "keys: classic X25519"
+                        },
+                        Style::new().fg(MUTED),
+                    )),
                     Line::raw(""),
                     Line::from(Span::styled(
-                        "On the phone: Keys → Scan computer's key, and check the fingerprint.",
+                        "Press f to show the pairing code full screen. On the phone: Keys → Scan computer's key, and check the fingerprint.",
                         Style::new().fg(TEXT),
                     )),
                 ])

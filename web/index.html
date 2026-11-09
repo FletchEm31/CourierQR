@@ -67,6 +67,8 @@
       <button id="genkey" class="primary">Create device key</button>
     </div>
     <div id="haskey" hidden>
+      <p id="pq-added" class="warn small" hidden>Added a post-quantum key to this phone. Its fingerprint
+        changed: pair it with your computer again with the command below.</p>
       <p class="muted">On your computer, run:</p>
       <pre id="paircmd" class="cmd"></pre>
       <p class="muted">Then check that the computer shows this fingerprint:</p>
@@ -121,6 +123,14 @@
       <legend>Encrypt to</legend>
       <label><input type="radio" name="to" value="device" id="to-device"> <span id="to-device-label">Paired computer</span></label>
       <label><input type="radio" name="to" value="passphrase" id="to-pass" checked> Passphrase</label>
+    </fieldset>
+    <fieldset class="to" id="method-box">
+      <legend>Protection</legend>
+      <label><input type="radio" name="method" value="pq" id="m-pq" checked> Post-quantum
+        <span class="muted small">ML-KEM-768 + X25519 hybrid · ~1.4 KB extra</span></label>
+      <label><input type="radio" name="method" value="classic" id="m-classic"> Classic
+        <span class="muted small">X25519 · smallest</span></label>
+      <p id="method-note" class="muted small"></p>
     </fieldset>
     <input id="sendpass" type="password" placeholder="Passphrase (12+ characters)" autocomplete="off" autocapitalize="off" spellcheck="false">
 

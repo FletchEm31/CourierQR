@@ -55,6 +55,11 @@ onmessage = ({ data: msg }) => {
       const k = cq.generateKeys();
       return postMessage({ type: "key", ...k, fingerprint: cq.fingerprint(k.public), qr: cq.qr(k.public) });
     }
+    case "keyupgrade": {
+      const k = cq.upgradeKeys(msg.secret);
+      if (!k) return;
+      return postMessage({ type: "key", ...k, fingerprint: cq.fingerprint(k.public), qr: cq.qr(k.public) });
+    }
     case "keyinfo":
       return postMessage({ type: "key", public: msg.public, fingerprint: cq.fingerprint(msg.public), qr: cq.qr(msg.public) });
     case "reset":

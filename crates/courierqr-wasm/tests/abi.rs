@@ -243,3 +243,54 @@ fn phone_sender_frames_decode_on_the_desktop_side() {
     let n = unsafe { cq_scan_first(px.as_ptr(), side as u32, side as u32) };
     assert_eq!(read(cq_raw_ptr(), n), desk.public.as_bytes());
 }
+
+#[test]
+fn old_phone_key_gains_a_post_quantum_identity_and_still_opens_both() {
+    // A key made by the app before post-quantum support: classic only.
+    let fresh = courierqr_core::generate_device_keys();
+    let old_secret = fresh
+        .secret
+        .expose_secret()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let old_public = fresh.public.split(' ').next().unwrap().to_string();
+    let rc = unsafe { cq_upgrade_keys(old_secret.as_ptr(), old_secret.len()) };
+    assert_eq!(rc, 1, "a post-quantum identity was added");
+    let secret = String::from_utf8(read(cq_key_secret_ptr(), cq_key_secret_len())).unwrap();
+    let public = String::from_utf8(read(cq_key_public_ptr(), cq_key_public_len())).unwrap();
+    cq_forget_keys();
+    assert!(secret.starts_with(&old_secret), "classic identity kept");
+    assert!(public.starts_with(&old_public) && public.contains(" age1pq1"));
+    // Upgrading again is a no-op.
+    assert_eq!(unsafe { cq_upgrade_keys(secret.as_ptr(), secret.len()) }, 0);
+    cq_forget_keys();
+
+    // Both methods open with the upgraded secret.
+    for method in [
+        courierqr_core::Method::PostQuantum,
+        courierqr_core::Method::Classic,
+    ] {
+        let tx = Transmission::new(
+            "n.txt",
+            b"both ways",
+            &SealKey::for_device(&public, method).unwrap(),
+            FrameConfig {
+                max_frame_bytes: 520,
+            },
+        )
+        .unwrap();
+        let mut rx = courierqr_core::Receiver::new();
+        for f in tx.frames() {
+            if rx.push(&f).unwrap() == courierqr_core::Accepted::Complete {
+                break;
+            }
+        }
+        let got = rx
+            .open(&courierqr_core::OpenKey::identity(secret.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.data, b"both ways", "{method:?}");
+    }
+}

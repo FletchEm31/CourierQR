@@ -2,7 +2,7 @@
 //! lossy, shuffling, occasionally-corrupting channel.
 
 use courierqr_core::{
-    Accepted, Error, FrameConfig, FrameError, OpenKey, Receiver, SealKey, Transmission,
+    Accepted, Error, FrameConfig, FrameError, Method, OpenKey, Receiver, SealKey, Transmission,
     generate_device_keys, qr_capacity, secrecy::ExposeSecret,
 };
 
@@ -170,6 +170,35 @@ fn paired_device_keys() {
         .unwrap()
         .unwrap();
     assert_eq!(ok.data, data);
+
+    // Each method on its own: post-quantum carries ~1.4 KB more header.
+    let mut sizes = vec![];
+    for method in [Method::PostQuantum, Method::Classic] {
+        let tx = Transmission::new(
+            "todo.md",
+            &data,
+            &SealKey::for_device(&keys.public, method).unwrap(),
+            FrameConfig::default(),
+        )
+        .unwrap();
+        sizes.push(tx.ciphertext_len());
+        let (_, rx) = transmit(&tx, 3, 20, 0, 500);
+        let got = rx
+            .open(&OpenKey::identity(keys.secret.expose_secret()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.data, data, "{method:?}");
+    }
+    assert!(
+        sizes[0] > sizes[1] + 1300 && sizes[0] < sizes[1] + 1800,
+        "{sizes:?}"
+    );
+
+    // A device paired before post-quantum keys existed (classic only)
+    // still works, and asking it for post-quantum is a clear error.
+    let classic_only = keys.public.split(' ').next().unwrap();
+    assert!(SealKey::for_device(classic_only, Method::Classic).is_ok());
+    assert!(SealKey::for_device(classic_only, Method::PostQuantum).is_err());
 
     // A different device's key can't open it.
     let other = generate_device_keys();

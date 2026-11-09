@@ -36,6 +36,7 @@ mod crypto;
 mod error;
 pub mod frame;
 mod payload;
+pub mod pq;
 mod receiver;
 #[cfg(feature = "scan")]
 pub mod scan;
@@ -43,8 +44,9 @@ pub mod scrub;
 mod sender;
 
 pub use crypto::{
-    DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, OpenKey, SealKey, fingerprint,
-    generate_device_keys, public_key_of, validate_public_key,
+    DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, Method, OpenKey, SealKey,
+    fingerprint, generate_device_keys, generate_pq_identity, public_key_of, split_key_set,
+    validate_public_key,
 };
 pub use error::{Error, Result};
 pub use frame::FrameError;

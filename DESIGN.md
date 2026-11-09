@@ -11,8 +11,10 @@ camera. The receiver never transmits anything back to the sender.
 2. **Compress.** Raw DEFLATE (miniz_oxide, level 9), used only if it makes the data smaller.
    A leading method byte (`0` stored, `1` deflate) records which. Decompression is capped at
    `MAX_TRANSFER_BYTES` (64 MiB), so a malicious "zip bomb" can't exhaust the receiver's memory.
-3. **Encrypt.** age v1, using either a scrypt passphrase recipient (default cost 2^16, and
-   receivers refuse anything above 2^20) or an X25519 recipient.
+3. **Encrypt.** age v1, using one of: a scrypt passphrase recipient (default cost 2^16, and
+   receivers refuse anything above 2^20), an X25519 recipient, or a post-quantum hybrid
+   `mlkem768x25519` recipient (see below). Step 0, before packing, is metadata scrubbing
+   (`scrub.rs`).
 4. **Fountain code.** RaptorQ (`raptorq` crate). Symbol size = frame budget − 28 bytes, rounded
    down to a multiple of 8. The sender emits every source symbol once, then fresh repair
    symbols forever, interleaved across source blocks.
@@ -103,11 +105,42 @@ camera ─► <video> ─► createImageBitmap ─► Web Worker ─► Offscree
   deploy is a new, explicit version. The CSP is `default-src 'none'` plus same-origin script,
   `wasm-unsafe-eval`, and nothing else.
 
+### Post-quantum hybrid recipients
+
+`pq.rs` implements age's `mlkem768x25519` recipient type (c2sp.org/age, shipped in age
+v1.3):
+
+- identity = 32-byte random seed (`AGE-SECRET-KEY-PQ-1…`); recipient = 1216-byte X-Wing
+  public key (`age1pq1…`, ~1959 chars, Bech32 without the 90-char limit);
+- stanza `-> mlkem768x25519 <base64 1120-byte enc>` + 32-byte body, body = HPKE (RFC 9180)
+  base mode, KEM X-Wing (0x647a), KDF HKDF-SHA256, AEAD ChaCha20-Poly1305, info
+  `age-encryption.org/mlkem768x25519`, plaintext = the 16-byte file key;
+- X-Wing: seed → SHAKE256 → (ML-KEM-768 d, z, X25519 sk); shared secret =
+  SHA3-256(ss_M ‖ ss_X ‖ ct_X ‖ pk_X ‖ `\.//^\`). Encapsulation keys get the FIPS 203
+  modulus check; an all-zero X25519 secret (low-order share) is a header failure; ML-KEM's
+  implicit rejection means a wrong key surfaces as an AEAD failure, i.e. "no match".
+- The recipient returns the `postquantum` label, so age refuses to mix it with classic
+  recipients (which would quietly void the post-quantum protection).
+
+ML-KEM comes from RustCrypto `ml-kem` 0.2 (the same crate age itself depends on); X25519,
+SHA-3, HKDF and ChaCha20-Poly1305 are the RustCrypto/dalek crates age already uses. The
+glue is ~150 lines, and `tests/cctv.rs` runs all 18 official C2SP/CCTV hybrid vectors
+(success, wrong key, corrupted ML-KEM or X25519 parts, low-order point, non-canonical
+base64, wrong lengths, extra arguments, uppercase tag, grease and multi-recipient files).
+
+A device's **key set** is its public keys joined by a space, classic first
+(`age1… age1pq1…`). Pairing moves and fingerprints the set; the sender chooses a method per
+message (`SealKey::for_device`). A single classic key normalizes to itself, so pre-existing
+pairings and fingerprints are unchanged. Devices created before this gain a post-quantum
+identity next to the classic one on next run.
+
+Cost: the stanza is ~1.46 KB versus ~0.1 KB for X25519, about 3 extra v15 codes per message.
+
 ### Pairing
 
-The phone generates an X25519 identity inside WebAssembly (randomness from
-`crypto.getRandomValues`) and stores the secret in IndexedDB. Only the public key leaves the
-phone, by any channel, because it isn't secret. The risk is *substitution*: someone swapping
+The phone generates its identities (classic X25519 and post-quantum) inside WebAssembly (randomness from
+`crypto.getRandomValues`) and stores the secret in IndexedDB. Only the public key set leaves
+the phone, by any channel, because it isn't secret. The risk is *substitution*: someone swapping
 in their own key on the way. Both sides therefore show the same **fingerprint**: 60 bits of
 `SHA-256("courierqr-fingerprint-v1:" ‖ key)` in Crockford base32 (`EEHD-GY2Z-XADG`),
 computed by the same Rust function on both devices and pinned by a test vector. `pair add`

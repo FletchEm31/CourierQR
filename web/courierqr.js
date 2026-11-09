@@ -134,7 +134,7 @@ export class CourierQR {
     this.#x.cq_reset();
   }
 
-  /** New X25519 device keypair: {secret: "AGE-SECRET-KEY-1…", public: "age1…"}. */
+  /** New device keys: {secret: classic + post-quantum identity lines, public: "age1… age1pq1…"}. */
   generateKeys() {
     const x = this.#x;
     x.cq_generate_keys();
@@ -142,6 +142,20 @@ export class CourierQR {
     const pub = fromUtf8.decode(this.#copyOut(x.cq_key_public_ptr(), x.cq_key_public_len()));
     x.cq_forget_keys();
     return { secret, public: pub };
+  }
+
+  /** Add a post-quantum identity to an older classic-only key. Returns {secret, public, added} or null. */
+  upgradeKeys(secret) {
+    const x = this.#x;
+    const rc = this.#withBytes(utf8.encode(secret), (p, n) => x.cq_upgrade_keys(p, n));
+    if (rc < 0) return null;
+    const out = {
+      secret: fromUtf8.decode(this.#copyOut(x.cq_key_secret_ptr(), x.cq_key_secret_len())),
+      public: fromUtf8.decode(this.#copyOut(x.cq_key_public_ptr(), x.cq_key_public_len())),
+      added: rc === 1,
+    };
+    x.cq_forget_keys();
+    return out;
   }
 
   /** Fingerprint shown on both devices (e.g. "K7QM-2XRA-9DPW"), or null if invalid. */

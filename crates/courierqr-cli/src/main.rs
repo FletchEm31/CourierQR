@@ -20,8 +20,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use courierqr_core::secrecy::ExposeSecret;
 use courierqr_core::{
-    Accepted, DEFAULT_SCRYPT_WORK_FACTOR, FrameConfig, OpenKey, Receiver, SealKey, Transmission,
-    generate_device_keys,
+    Accepted, DEFAULT_SCRYPT_WORK_FACTOR, FrameConfig, Method, OpenKey, Receiver, SealKey,
+    Transmission, generate_device_keys,
 };
 
 use render::{Grid, Layout};
@@ -130,8 +130,10 @@ enum PairCmd {
     Add {
         /// Your name for the device, e.g. "phone".
         name: String,
-        /// The device's public key (age1…).
-        public_key: String,
+        /// The device's key set: `age1… age1pq1…` (as the phone shows it),
+        /// or a single age1… key from an older pairing.
+        #[arg(required = true, num_args = 1..)]
+        public_key: Vec<String>,
         /// Skip the fingerprint confirmation prompt.
         #[arg(long)]
         yes: bool,
@@ -164,6 +166,10 @@ struct SealArgs {
     /// before encryption.
     #[arg(long)]
     keep_metadata: bool,
+    /// With --to: use classic X25519 instead of the default post-quantum
+    /// hybrid (ML-KEM-768 + X25519). Saves ~1.4 KB per message.
+    #[arg(long)]
+    classic: bool,
 }
 
 #[derive(Args)]
@@ -273,7 +279,7 @@ fn main() -> Result<()> {
                 name,
                 public_key,
                 yes,
-            } => pair::add(&name, &public_key, yes),
+            } => pair::add(&name, &public_key.join(" "), yes),
             PairCmd::List => pair::list(),
             PairCmd::Show { png } => pair::show(png.as_deref()),
             PairCmd::Remove { name } => pair::remove(&name),
@@ -300,9 +306,26 @@ fn prepare(file: &Path, args: &SealArgs, layout: &Layout) -> Result<Transmission
 
     let key = match &args.to {
         Some(to) => {
-            let (pk, label) = pair::resolve(to)?;
-            eprintln!("encrypting to {label}");
-            SealKey::recipient(pk)
+            let (set, label) = pair::resolve(to)?;
+            let method = if args.classic {
+                Method::Classic
+            } else {
+                Method::PostQuantum
+            };
+            match SealKey::for_device(&set, method) {
+                Ok(k) => {
+                    eprintln!("encrypting to {label}: {}", method.label());
+                    k
+                }
+                Err(_) if method == Method::PostQuantum => {
+                    eprintln!(
+                        "encrypting to {label}: classic (X25519). It has no post-quantum key yet; \
+                         pair it again from the updated app to enable post-quantum"
+                    );
+                    SealKey::for_device(&set, Method::Classic)?
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         None => SealKey::Passphrase {
             passphrase: passphrase(true)?.into(),

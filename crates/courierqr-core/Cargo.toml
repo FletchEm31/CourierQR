@@ -8,12 +8,20 @@ repository.workspace = true
 
 [dependencies]
 age = "0.12.1"
+age-core = "0.12.0"
+base64 = "0.22"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 crc32fast = "1.5.4"
 getrandom = "0.2"
+hkdf = "0.12"
+ml-kem = { version = "0.2", features = ["deterministic"] }
 miniz_oxide = "0.9.1"
 raptorq = "2.0.1"
 rxing = { version = "0.9.3", default-features = false, features = ["decoders", "multi_barcode_readers", "encoding_rs", "qrcode"], optional = true }
 sha2 = "0.10"
+sha3 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+zeroize = "1"
 thiserror = "2.0.21"
 
 [features]

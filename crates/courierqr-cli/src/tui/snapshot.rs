@@ -391,6 +391,7 @@ fn every_screen_renders_and_works() {
     assert!(
         t.contains("phone only") && t.contains("stripped automatically") && t.contains("8 codes/s")
     );
+    assert!(t.contains("post-quantum") && t.contains("ML-KEM-768 + X25519 hybrid"));
     dump(&buf, "send-compose");
     // Digits typed into the message stay in the message (no tab switch).
     assert_eq!(app.tab, super::Tab::Send);
@@ -444,6 +445,7 @@ fn every_screen_renders_and_works() {
     let got = rx.open(&OpenKey::identity(secret)).unwrap().unwrap();
     assert_eq!(got.data, typed.as_bytes());
     assert_eq!(got.name, "note.txt", "no timestamp in the name");
+    assert_eq!(app.send.method, courierqr_core::Method::PostQuantum);
     key(&mut app, KeyCode::Esc);
     assert!(app.send.live.is_none());
 

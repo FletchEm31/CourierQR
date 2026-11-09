@@ -149,4 +149,4 @@ details label { display: flex; justify-content: space-between; align-items: cent
   border: 1px solid var(--line); border-radius: 10px; padding: .7rem; resize: vertical;
 }
 .or { text-align: center; margin: .5rem 0; }
-#pickmeta.warn { color: #ffb84d; }
+#pickmeta.warn, .warn { color: #ffb84d; }

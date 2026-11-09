@@ -141,14 +141,18 @@ fn identity_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("identity"))
 }
 
-/// This computer's own secret identity, if it has one.
+/// This computer's own secret identities (classic and post-quantum, one per
+/// line), if it has any.
 pub fn own_identity() -> Result<Option<String>> {
     match fs::read_to_string(identity_file()?) {
-        Ok(text) => Ok(text
-            .lines()
-            .map(str::trim)
-            .find(|l| l.starts_with("AGE-SECRET-KEY-"))
-            .map(str::to_owned)),
+        Ok(text) => {
+            let keys: Vec<&str> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+                .collect();
+            Ok((!keys.is_empty()).then(|| keys.join("\n")))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -171,6 +175,21 @@ pub fn own_public_key() -> Result<String> {
 pub fn own_public_key_quiet() -> Result<(String, bool)> {
     let path = identity_file()?;
     if let Some(secret) = own_identity()? {
+        if !secret.contains("AGE-SECRET-KEY-PQ-1") {
+            // Created before post-quantum support: add a post-quantum
+            // identity next to the classic one (which keeps working).
+            let mut f = fs::OpenOptions::new().append(true).open(&path)?;
+            writeln!(
+                f,
+                "# post-quantum (ML-KEM-768 + X25519) identity, added later"
+            )?;
+            writeln!(
+                f,
+                "{}",
+                courierqr_core::generate_pq_identity().expose_secret()
+            )?;
+        }
+        let secret = own_identity()?.unwrap_or(secret);
         let pk = courierqr_core::public_key_of(&secret)
             .with_context(|| format!("{} is corrupt", path.display()))?;
         return Ok((pk, false));
@@ -191,7 +210,7 @@ pub fn own_public_key_quiet() -> Result<(String, bool)> {
         f,
         "# CourierQR identity for this computer. SECRET: never share this file."
     )?;
-    writeln!(f, "# public key: {}", keys.public)?;
+    writeln!(f, "# public keys: {}", keys.public)?;
     writeln!(f, "{}", keys.secret.expose_secret())?;
     Ok((keys.public, true))
 }
@@ -200,7 +219,8 @@ pub fn own_public_key_quiet() -> Result<(String, bool)> {
 pub fn show(png: Option<&std::path::Path>) -> Result<()> {
     let pk = own_public_key()?;
     let fp = fingerprint(&pk)?;
-    let code = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::M)?;
+    // A post-quantum key set is ~2 KB: low ECC keeps the code as coarse as possible.
+    let code = crate::render::encode_smallest(pk.as_bytes(), qrcode::EcLevel::L)?;
     if let Some(path) = png {
         let img = crate::render::code_image(&code, 10);
         image::save_buffer(
@@ -214,8 +234,10 @@ pub fn show(png: Option<&std::path::Path>) -> Result<()> {
     } else {
         print!("{}", crate::render::terminal_qr(&code));
     }
-    println!("\nThis computer's public key:\n  {pk}\nfingerprint: {fp}");
+    println!("\nThis computer's public keys (classic + post-quantum):\n  {pk}\nfingerprint: {fp}");
     eprintln!("\nOn the phone: Keys → Scan computer's key, then check the fingerprint matches.");
+    eprintln!("The code is large (post-quantum keys are ~2 KB). If the phone struggles, zoom the");
+    eprintln!("terminal out (Ctrl -) or use --png and open the image full screen.");
     Ok(())
 }
 
@@ -223,6 +245,7 @@ pub fn show(png: Option<&std::path::Path>) -> Result<()> {
 /// Returns (public key, label for messages).
 pub fn resolve(to: &str) -> Result<(String, String)> {
     if to.trim().to_ascii_lowercase().starts_with("age1") {
+        // a raw key or key set
         let pk = validate_public_key(to)?;
         let fp = fingerprint(&pk)?;
         return Ok((pk, format!("key {fp}")));

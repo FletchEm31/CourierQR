@@ -335,12 +335,43 @@ pub extern "C" fn cq_forget_file() {
 
 // ---------------------------------------------------------------- pairing
 
-/// Generate an X25519 device keypair (randomness from `host_random`).
+/// Generate the device's identities, classic X25519 and post-quantum
+/// ML-KEM-768 + X25519 (randomness from `host_random`); the public side is
+/// the key set `age1… age1pq1…`.
 /// Read it with `cq_key_*`, store the secret, then call `cq_forget_keys`.
 #[unsafe(no_mangle)]
 pub extern "C" fn cq_generate_keys() {
     let k = courierqr_core::generate_device_keys();
     with(|s| s.keys = Some((k.secret.expose_secret().to_owned(), k.public)));
+}
+
+/// Add a post-quantum identity to a device key created before they
+/// existed. Leaves the result in `cq_key_*` (secret lines + key set).
+/// Returns 1 if a key was added, 0 if it already had one, -1 if invalid.
+///
+/// # Safety
+/// `ptr` must point to `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn cq_upgrade_keys(ptr: *const u8, len: usize) -> i32 {
+    let mut secret = String::from_utf8_lossy(unsafe { slice(ptr, len) }).into_owned();
+    let added = !secret.contains("AGE-SECRET-KEY-PQ-1");
+    if added {
+        secret = format!(
+            "{}\n{}",
+            secret.trim_end(),
+            courierqr_core::generate_pq_identity().expose_secret()
+        );
+    }
+    match courierqr_core::public_key_of(&secret) {
+        Ok(public) => with(|s| {
+            s.keys = Some((secret, public));
+            added as i32
+        }),
+        Err(e) => with(|s| {
+            s.last_error = e.to_string();
+            -1
+        }),
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -413,11 +444,18 @@ pub extern "C" fn cq_text_len() -> usize {
 pub unsafe extern "C" fn cq_qr_encode(ptr: *const u8, len: usize) -> i32 {
     use qrcode::{EcLevel, QrCode, Version, bits::Bits};
     let data = unsafe { slice(ptr, len) };
+    // Post-quantum key sets are ~2 KB: use the low ECC level for those so
+    // the code stays as coarse (easy to scan) as possible.
+    let ec = if data.len() > 600 {
+        EcLevel::L
+    } else {
+        EcLevel::M
+    };
     let code = (1..=40).find_map(|v| {
         let mut bits = Bits::new(Version::Normal(v));
         bits.push_byte_data(data).ok()?;
-        bits.push_terminator(EcLevel::M).ok()?;
-        QrCode::with_bits(bits, EcLevel::M).ok()
+        bits.push_terminator(ec).ok()?;
+        QrCode::with_bits(bits, ec).ok()
     });
     match code {
         Some(code) => with(|s| {

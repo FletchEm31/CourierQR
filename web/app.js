@@ -311,7 +311,10 @@ async function openPairView() {
   const key = await loadKey();
   $("nokey").hidden = !!key;
   $("haskey").hidden = !key;
-  if (key) worker.postMessage({ type: "keyinfo", public: key.public });
+  // Keys made before post-quantum support get a post-quantum identity added
+  // (the classic one stays, so existing pairings keep working).
+  if (key && !key.secret.includes("AGE-SECRET-KEY-PQ-1")) worker.postMessage({ type: "keyupgrade", secret: key.secret });
+  else if (key) worker.postMessage({ type: "keyinfo", public: key.public });
   await renderComputer();
   show("pair");
 }
@@ -383,7 +386,9 @@ function resetScanText() {
 
 async function onKey(m) {
   if (m.secret) {
-    await saveKey({ secret: m.secret, public: m.public, created: Date.now() });
+    const old = await loadKey();
+    await saveKey({ secret: m.secret, public: m.public, created: old?.created || Date.now() });
+    $("pq-added").hidden = !m.added;
     // Ask the browser not to evict our storage (matters most on iOS).
     navigator.storage?.persist?.().catch(() => {});
     $("nokey").hidden = true;
@@ -458,15 +463,38 @@ async function openSendView() {
   show("send");
 }
 
+// A device's key set is "age1… age1pq1…": pick the key for the chosen method.
+const pqKeyOf = (set) => (set || "").split(/\s+/).find((k) => k.toLowerCase().startsWith("age1pq1")) || null;
+// ("1" can't appear inside bech32 data, so a classic key never starts "age1pq1".)
+const classicKeyOf = (set) => (set || "").split(/\s+/).find((k) => /^age1/i.test(k) && !/^age1pq1/i.test(k)) || null;
+
+function syncMethod() {
+  const byPass = $("to-pass").checked;
+  $("method-box").hidden = byPass;
+  if (byPass) return;
+  loadComputer().then((c) => {
+    const hasPq = !!pqKeyOf(c?.public);
+    $("m-pq").disabled = !hasPq;
+    if (!hasPq) $("m-classic").checked = true;
+    $("method-note").textContent = !c
+      ? ""
+      : hasPq
+        ? "Post-quantum protects against someone recording the codes now and decrypting them with a future quantum computer."
+        : "Your computer was paired before post-quantum keys: re-scan its key (Keys tab) to enable it.";
+  });
+}
+
 function syncSendForm() {
   const byPass = $("to-pass").checked;
+  syncMethod();
   $("sendpass").hidden = !byPass;
   $("sendgo").disabled = !sendFile || (byPass && $("sendpass").value.length < 12);
   if (sendFile) {
     const v = Number($("qrv").value), grid = Number($("grid").value), fps = Number($("fps").value);
     // ~ciphertext ≈ compressed size + ~250 B age overhead; estimate assumes no compression
     const perFrame = Math.max(1, workerCapacity(v) - 28);
-    const frames = Math.ceil((sendFile.data.length + 250) / perFrame);
+    const overhead = !byPass && $("m-pq").checked ? 1700 : 250;
+    const frames = Math.ceil((sendFile.data.length + overhead) / perFrame);
     const secs = frames / (fps * grid);
     // Real-world pickup is a fraction of the codes shown (webcams: ~1 in 5).
     const realistic = secs * 4;
@@ -512,7 +540,8 @@ for (const id of ["sendpass", "qrv", "grid", "fps"]) $(id).addEventListener("inp
 $("sendgo").addEventListener("click", async () => {
   $("send-err").hidden = true;
   const byPass = $("to-pass").checked;
-  const key = byPass ? $("sendpass").value : (await loadComputer())?.public;
+  const set = (await loadComputer())?.public;
+  const key = byPass ? $("sendpass").value : $("m-pq").checked ? pqKeyOf(set) : classicKeyOf(set);
   if (!key) return;
   $("sendgo").disabled = true;
   $("sendgo").textContent = byPass ? "Encrypting…" : "Starting…";

@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use courierqr_core::{FrameConfig, FrameStream, SealKey, Transmission};
+use courierqr_core::{FrameConfig, FrameStream, Method, SealKey, Transmission};
 use qrcode::{EcLevel, QrCode, Version, bits::Bits};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -54,6 +54,8 @@ pub(crate) struct SendTab {
     pub(crate) live: Option<Broadcast>,
     /// Codes per second for the next send (↑/↓ also adjust it live).
     pub(crate) fps: u32,
+    /// Protection for a paired device (space toggles).
+    pub(crate) method: Method,
     /// QR version that fits the body area at the last draw.
     fit_version: i16,
 }
@@ -68,6 +70,7 @@ impl SendTab {
             error: None,
             live: None,
             fps: 8,
+            method: Method::PostQuantum,
             fit_version: 10,
         }
     }
@@ -123,7 +126,14 @@ fn start(app: &mut App) {
     }
     let devices = SendTab::devices();
     let (key, to) = match devices.get(s.recipient) {
-        Some((n, k)) => (SealKey::recipient(k.clone()), n.clone()),
+        Some((n, k)) => match SealKey::for_device(k, s.method) {
+            Ok(key) => (key, format!("{n} · {}", s.method.label())),
+            Err(e) => {
+                s.error = Some(format!("{e} (or press space for classic)"));
+                s.focus = Focus::Recipient;
+                return;
+            }
+        },
         None => {
             if s.passphrase.chars().count() < 12 {
                 s.error = Some("use a passphrase of at least 12 characters".into());
@@ -212,6 +222,13 @@ pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
         }
         (Focus::Recipient | Focus::None, KeyCode::Left) => s.fps = s.fps.saturating_sub(1).max(1),
         (Focus::Recipient | Focus::None, KeyCode::Right) => s.fps = (s.fps + 1).min(20),
+        (Focus::Recipient, KeyCode::Char(' ')) => {
+            s.method = match s.method {
+                Method::PostQuantum => Method::Classic,
+                Method::Classic => Method::PostQuantum,
+            };
+            s.error = None;
+        }
         (Focus::Recipient, KeyCode::Up) => s.recipient = s.recipient.saturating_sub(1),
         (Focus::Recipient, KeyCode::Down) => {
             s.recipient = (s.recipient + 1).min(SendTab::devices().len())
@@ -249,6 +266,7 @@ pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Focus::None => vec![("enter", "type a message"), ("←→", "speed")],
         Focus::Recipient => vec![
             ("↑↓", "recipient"),
+            ("space", "post-quantum/classic"),
             ("←→", "speed"),
             ("^s", "send"),
             ("tab", "next field"),
@@ -377,10 +395,37 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     lines.push(Line::raw(""));
     lines.push(head("encryption"));
     match devices.get(s.recipient) {
-        Some((n, _)) => {
+        Some((n, key)) => {
+            let has_pq = key.contains("age1pq1");
+            let radio = |on: bool, label: &str, what: &str, enabled: bool| {
+                Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        if on { "● " } else { "○ " },
+                        Style::new().fg(if on { ACCENT } else { MUTED }),
+                    ),
+                    Span::styled(
+                        format!("{label:<13}"),
+                        Style::new().fg(if enabled { TEXT } else { MUTED }),
+                    ),
+                    Span::styled(what.to_string(), Style::new().fg(MUTED)),
+                ])
+            };
+            let pq_on = s.method == Method::PostQuantum;
+            lines.push(radio(
+                pq_on,
+                "post-quantum",
+                if has_pq {
+                    "ML-KEM-768 + X25519 hybrid, +1.4 KB"
+                } else {
+                    "re-pair this phone to enable"
+                },
+                has_pq,
+            ));
+            lines.push(radio(!pq_on, "classic", "X25519, smallest", true));
             lines.push(Line::from(vec![
-                k("method"),
-                v("age: X25519 key + ChaCha20-Poly1305".into()),
+                k("cipher"),
+                v("age: ChaCha20-Poly1305 (256-bit key)".into()),
             ]));
             lines.push(Line::from(vec![
                 k("opens on"),
@@ -392,6 +437,10 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
             lines.push(Line::from(vec![
                 k("method"),
                 v("age: scrypt passphrase + ChaCha20-Poly1305".into()),
+            ]));
+            lines.push(Line::from(vec![
+                k("quantum"),
+                v("no public-key maths to break; a strong passphrase holds up".into()),
             ]));
             lines.push(Line::from(vec![
                 k("opens on"),
@@ -411,7 +460,11 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     lines.push(Line::raw(""));
     lines.push(head("transmission"));
     let cap = crate::render::byte_capacity(s.fit_version).saturating_sub(28);
-    let est = (s.text.len() + 250).div_ceil(cap.max(1));
+    let overhead = match devices.get(s.recipient) {
+        Some(_) if s.method == Method::PostQuantum => 1700,
+        _ => 250,
+    };
+    let est = (s.text.len() + overhead).div_ceil(cap.max(1));
     lines.push(Line::from(vec![
         k("speed"),
         ok(format!("{} codes/s", s.fps)),
