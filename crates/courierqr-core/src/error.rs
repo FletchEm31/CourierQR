@@ -27,6 +27,9 @@ pub enum Error {
 
     #[error("decompression failed or exceeded the size limit")]
     Decompress,
+
+    #[error("not a CourierQR transport message: {0}")]
+    BadEnvelope(&'static str),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
