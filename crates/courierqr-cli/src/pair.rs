@@ -65,7 +65,8 @@ fn valid_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-pub fn add(name: &str, public_key: &str, yes: bool) -> Result<()> {
+/// Validate a device name and key; returns the normalized key and its fingerprint.
+pub fn check(name: &str, public_key: &str) -> Result<(String, String)> {
     if !valid_name(name) {
         bail!("device names are 1–32 letters, digits, '-' or '_' (and can't start with age1)");
     }
@@ -73,7 +74,21 @@ pub fn add(name: &str, public_key: &str, yes: bool) -> Result<()> {
         "that isn't a valid age1… public key (a typo is the usual cause; the checksum caught it)",
     )?;
     let fp = fingerprint(&pk)?;
+    Ok((pk, fp))
+}
 
+/// Save (or replace) a paired device without printing anything.
+pub fn add_quiet(name: &str, public_key: &str) -> Result<String> {
+    let (pk, fp) = check(name, public_key)?;
+    let mut devices = load()?;
+    devices.retain(|(n, _)| n != name);
+    devices.push((name.to_owned(), pk));
+    save(&devices)?;
+    Ok(fp)
+}
+
+pub fn add(name: &str, public_key: &str, yes: bool) -> Result<()> {
+    let (pk, fp) = check(name, public_key)?;
     eprintln!("device:      {name}");
     eprintln!("fingerprint: {fp}");
     if !yes {
@@ -85,11 +100,7 @@ pub fn add(name: &str, public_key: &str, yes: bool) -> Result<()> {
             bail!("not paired. If the fingerprints differ, the key was changed on the way here");
         }
     }
-
-    let mut devices = load()?;
-    devices.retain(|(n, _)| n != name);
-    devices.push((name.to_owned(), pk));
-    save(&devices)?;
+    add_quiet(name, &pk)?;
     eprintln!("paired. Send with: courierqr send <file> --to {name}");
     Ok(())
 }
@@ -108,14 +119,18 @@ pub fn list() -> Result<()> {
     Ok(())
 }
 
-pub fn remove(name: &str) -> Result<()> {
+pub fn remove_quiet(name: &str) -> Result<()> {
     let mut devices = load()?;
     let before = devices.len();
     devices.retain(|(n, _)| n != name);
     if devices.len() == before {
         bail!("no paired device named {name:?}");
     }
-    save(&devices)?;
+    save(&devices)
+}
+
+pub fn remove(name: &str) -> Result<()> {
+    remove_quiet(name)?;
     eprintln!("removed {name}");
     Ok(())
 }
@@ -142,10 +157,23 @@ pub fn own_identity() -> Result<Option<String>> {
 /// Load this computer's identity, creating it (0600) on first use.
 /// Returns the public key.
 pub fn own_public_key() -> Result<String> {
+    let (pk, created) = own_public_key_quiet()?;
+    if created {
+        eprintln!(
+            "created this computer's identity at {}",
+            identity_file()?.display()
+        );
+    }
+    Ok(pk)
+}
+
+/// Like [`own_public_key`] without printing; also says whether it was just created.
+pub fn own_public_key_quiet() -> Result<(String, bool)> {
     let path = identity_file()?;
     if let Some(secret) = own_identity()? {
-        return courierqr_core::public_key_of(&secret)
-            .with_context(|| format!("{} is corrupt", path.display()));
+        let pk = courierqr_core::public_key_of(&secret)
+            .with_context(|| format!("{} is corrupt", path.display()))?;
+        return Ok((pk, false));
     }
     let keys = generate_device_keys();
     fs::create_dir_all(path.parent().unwrap())?;
@@ -165,8 +193,7 @@ pub fn own_public_key() -> Result<String> {
     )?;
     writeln!(f, "# public key: {}", keys.public)?;
     writeln!(f, "{}", keys.secret.expose_secret())?;
-    eprintln!("created this computer's identity at {}", path.display());
-    Ok(keys.public)
+    Ok((keys.public, true))
 }
 
 /// Show this computer's public key so a phone can pair with it (to send *to* it).
@@ -217,6 +244,7 @@ mod tests {
 
     #[test]
     fn add_list_resolve_remove() {
+        let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("cqr-pair-test-{}", std::process::id()));
         // SAFETY: only this test touches this variable.
         unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &dir) };

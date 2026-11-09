@@ -25,6 +25,36 @@ pub trait Source {
     /// Next frame, or `None` when the source is exhausted (files only).
     fn next_frame(&mut self) -> Result<Option<Frame>>;
     fn describe(&self) -> String;
+    /// What the camera is and how it's configured, for the UI.
+    fn info(&self) -> CameraInfo;
+}
+
+/// Everything about the capture setup that affects how well codes read.
+#[derive(Clone, Debug, Default)]
+pub struct CameraInfo {
+    pub device: String,
+    pub card: String,
+    pub driver: String,
+    pub bus: String,
+    /// Pixel format being captured (MJPG, YUYV, ...).
+    pub format: String,
+    pub width: u32,
+    pub height: u32,
+    /// Frame rate the camera was configured for, if it reports one.
+    pub fps: Option<f64>,
+    /// Largest resolution the camera offers in any format.
+    pub max: Option<(u32, u32)>,
+    /// Every pixel format on offer.
+    pub formats: Vec<String>,
+    /// Autofocus: Some(true) = has auto focus, Some(false) = manual focus
+    /// only, None = fixed focus (no focus controls).
+    pub autofocus: Option<bool>,
+}
+
+impl CameraInfo {
+    pub fn megapixels(w: u32, h: u32) -> f64 {
+        (w as f64 * h as f64) / 1e6
+    }
 }
 
 // ---------------------------------------------------------------- .y4m file
@@ -36,6 +66,7 @@ pub struct Y4mSource {
     h: usize,
     chroma: usize,
     name: String,
+    fps: Option<f64>,
 }
 
 impl Y4mSource {
@@ -72,6 +103,11 @@ impl Y4mSource {
             h,
             chroma,
             name: path.display().to_string(),
+            fps: field('F').and_then(|f| {
+                let (n, d) = f.split_once(':')?;
+                let (n, d): (f64, f64) = (n.parse().ok()?, d.parse().ok()?);
+                (d > 0.0).then(|| n / d)
+            }),
         })
     }
 }
@@ -98,12 +134,28 @@ impl Source for Y4mSource {
     fn describe(&self) -> String {
         format!("{} ({}x{} recording)", self.name, self.w, self.h)
     }
+
+    fn info(&self) -> CameraInfo {
+        CameraInfo {
+            device: self.name.clone(),
+            card: "recording".into(),
+            driver: "y4m file".into(),
+            bus: "-".into(),
+            format: "Y4M".into(),
+            width: self.w as u32,
+            height: self.h as u32,
+            fps: self.fps,
+            max: Some((self.w as u32, self.h as u32)),
+            formats: vec!["Y4M".into()],
+            autofocus: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------- V4L2 webcam
 
 #[cfg(feature = "camera")]
-pub use v4l_source::{V4lSource, list_cameras};
+pub use v4l_source::{V4lSource, cameras, list_cameras};
 
 #[cfg(feature = "camera")]
 mod v4l_source {
@@ -120,6 +172,7 @@ mod v4l_source {
         fmt: Format,
         name: String,
         bad_jpegs: u32,
+        info: CameraInfo,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -176,8 +229,52 @@ mod v4l_source {
             let fmt = dev.set_format(&Format::new(w, h, pix.fourcc()))?;
             let _ = dev.set_params(&Parameters::with_fps(30));
 
+            let fps = dev.params().ok().and_then(|p| {
+                let i = p.interval;
+                (i.numerator > 0).then(|| i.denominator as f64 / i.numerator as f64)
+            });
+            let mut formats: Vec<String> = offered.iter().map(|f| f.to_string()).collect();
+            formats.dedup();
+            let max = offered
+                .iter()
+                .flat_map(|fc| dev.enum_framesizes(*fc).unwrap_or_default())
+                .flat_map(|s| s.size.to_discrete())
+                .map(|d| (d.width, d.height))
+                .max_by_key(|&(w, h)| w as u64 * h as u64);
+            let names: Vec<String> = dev
+                .query_controls()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| c.name.to_lowercase())
+                .collect();
+            let autofocus = if names.iter().any(|n| {
+                n.contains("focus, auto")
+                    || n.contains("focus automatic")
+                    || n.contains("autofocus")
+            }) {
+                Some(true)
+            } else if names.iter().any(|n| n.contains("focus")) {
+                Some(false)
+            } else {
+                None
+            };
+            let info = CameraInfo {
+                device: path.to_string(),
+                card: caps.card.clone(),
+                driver: caps.driver.clone(),
+                bus: caps.bus.clone(),
+                format: fmt.fourcc.to_string(),
+                width: fmt.width,
+                height: fmt.height,
+                fps,
+                max,
+                formats,
+                autofocus,
+            };
+
             let stream = MmapStream::with_buffers(&dev, Type::VideoCapture, 4)?;
             Ok(V4lSource {
+                info,
                 stream,
                 name: format!(
                     "{} ({path}, {}x{} {})",
@@ -236,6 +333,27 @@ mod v4l_source {
         fn describe(&self) -> String {
             self.name.clone()
         }
+
+        fn info(&self) -> CameraInfo {
+            self.info.clone()
+        }
+    }
+
+    /// (device path, card name) for every capture-capable camera.
+    pub fn cameras() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for n in v4l::context::enum_devices() {
+            let path = n.path().display().to_string();
+            let Ok(dev) = Device::with_path(&path) else {
+                continue;
+            };
+            let Ok(caps) = dev.query_caps() else { continue };
+            if dev.enum_formats().map(|f| f.is_empty()).unwrap_or(true) {
+                continue;
+            }
+            out.push((path, caps.card));
+        }
+        out
     }
 
     pub fn list_cameras() -> Result<()> {
@@ -346,16 +464,16 @@ pub fn scan_until_complete(src: &mut dyn Source, preview: bool) -> Result<Receiv
 }
 
 /// Why codes were turned away, so "nothing happens" is never a mystery.
-#[derive(Default)]
-struct Rejections {
-    not_courierqr: u64,
-    damaged: u64,
-    other: u64,
-    example: Option<String>,
+#[derive(Default, Clone)]
+pub struct Rejections {
+    pub not_courierqr: u64,
+    pub damaged: u64,
+    pub other: u64,
+    pub example: Option<String>,
 }
 
 impl Rejections {
-    fn note(&mut self, e: FrameError, payload: &[u8]) {
+    pub fn note(&mut self, e: FrameError, payload: &[u8]) {
         match e {
             FrameError::NotCourierQr => {
                 self.not_courierqr += 1;
@@ -369,7 +487,7 @@ impl Rejections {
         }
     }
 
-    fn summary(&self) -> String {
+    pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         if self.not_courierqr > 0 {
             let what = match self.example.as_deref() {

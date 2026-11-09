@@ -43,6 +43,31 @@ file ◄─ unpack ◄─ age decrypt ◄─ RaptorQ decode ◄─ CRC check ◄
 | 3 | Phone receiver: offline web app (PWA), the same Rust core compiled to WebAssembly | ✅ done |
 | 4 | Phone → computer: phone app sends, `courierqr receive --camera` reads it with a webcam | ✅ done |
 
+## Terminal UI
+
+Run `courierqr` with no arguments (or `courierqr ui`) for a full-screen terminal app:
+
+- **Receive:** a live camera view drawn right in the terminal, a pieces gauge, a
+  pieces-per-second graph, and a breakdown of any QR codes it turned away. When the
+  transfer completes it unlocks with this computer's key (or asks for the passphrase) and
+  saves to `~/Downloads` without overwriting anything.
+- **Camera details:** device, driver and USB bus; the stream's resolution and megapixels,
+  pixel format, and the frame rate it was set to next to the rate actually measured; decode
+  time per frame; the sensor's max resolution, supported formats and autofocus. A status
+  line says what's limiting the read rate (camera dropping frames in low light, decoder
+  falling behind, or no codes in view).
+- **Send:** type or paste a note, pick a paired phone (or a passphrase), press `Ctrl+S`,
+  and the terminal itself becomes the transmitter: the note is encrypted and shown as a
+  loop of QR codes sized to the window. `Space` pauses, `↑/↓` change speed, `Esc` stops.
+- **Devices:** paired phones with their fingerprints. Press `a` to pair one and confirm its
+  fingerprint before saving, or `d d` to forget one. This computer's key is shown as a
+  scannable QR code for the phone.
+- `^p` command palette, `1-3` tabs, and mouse clicks on tabs.
+
+Built with [ratatui](https://ratatui.rs). The UI tests render every screen into ratatui's
+test backend, run the real camera worker on a generated recording, and decode the Send
+tab's on-screen QR codes back into the typed note.
+
 ## Quick start (Linux)
 
 ```sh

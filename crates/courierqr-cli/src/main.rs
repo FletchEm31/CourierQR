@@ -4,6 +4,11 @@ mod camera;
 mod decode;
 mod pair;
 mod render;
+mod tui;
+
+/// Tests that touch process-wide env vars (COURIERQR_CONFIG_DIR) take this.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(feature = "window")]
 mod window;
 
@@ -31,11 +36,23 @@ const PASSPHRASE_ENV: &str = "COURIERQR_PASSPHRASE";
 )]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Full-screen terminal UI (also what plain `courierqr` opens).
+    Ui {
+        /// Camera device to use (default: the first one found).
+        #[arg(long, value_name = "DEVICE")]
+        camera: Option<String>,
+        /// Replay a .y4m recording instead of a camera (testing/demo).
+        #[arg(long, value_name = "FILE.y4m", hide = true)]
+        camera_file: Option<PathBuf>,
+        /// Where to save received files (default: ~/Downloads).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Show a file as a looping stream of QR codes in a window.
     #[cfg(feature = "window")]
     Send {
@@ -178,7 +195,29 @@ fn parse_size(s: &str) -> std::result::Result<(usize, usize), String> {
 }
 
 fn main() -> Result<()> {
-    match Cli::parse().cmd {
+    let Some(cmd) = Cli::parse().cmd else {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            return tui::run(tui::Opts {
+                camera: None,
+                camera_file: None,
+                out: default_download_dir(),
+            });
+        }
+        use clap::CommandFactory;
+        Cli::command().print_help()?;
+        return Ok(());
+    };
+    match cmd {
+        Cmd::Ui {
+            camera,
+            camera_file,
+            out,
+        } => tui::run(tui::Opts {
+            camera,
+            camera_file,
+            out: out.unwrap_or_else(default_download_dir),
+        }),
         #[cfg(feature = "window")]
         Cmd::Send {
             file,
@@ -400,6 +439,37 @@ fn finish(rx: Receiver, args: &OpenArgs, out: &Path, force: bool) -> Result<()> 
     fs::write(&dest, &file.data)?;
     eprintln!("saved {} ({} bytes)", dest.display(), file.data.len());
     Ok(())
+}
+
+/// Save a received file into `out` without overwriting anything: if the
+/// name is taken, use "name (1).ext", "name (2).ext", ... Returns the path.
+pub(crate) fn save_unique(out: &Path, name: &str, data: &[u8]) -> Result<PathBuf> {
+    fs::create_dir_all(out)?;
+    let base = safe_name(name)?;
+    let (stem, ext) = match base.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_owned(), format!(".{e}")),
+        _ => (base.clone(), String::new()),
+    };
+    let mut dest = out.join(&base);
+    let mut n = 1;
+    while dest.exists() {
+        dest = out.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    let mut f = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest)?;
+    f.write_all(data)?;
+    Ok(dest)
+}
+
+/// Where received files go by default: ~/Downloads if it exists, else here.
+pub(crate) fn default_download_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Downloads"))
+        .filter(|d| d.is_dir())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Pull the `AGE-SECRET-KEY-1...` line out of an identity file, skipping the
