@@ -475,11 +475,26 @@ fn locked_vault_shows_unlock_gate_then_opens() {
     assert!(app.unlock.is_some(), "locked vault prompts for a code");
     assert!(app.own_key.is_none(), "keys stay closed until unlocked");
     let buf = render(&mut app);
-    assert!(text(&buf).contains("keys locked") && text(&buf).contains("recovery code"));
+    assert!(text(&buf).contains("keys locked") && text(&buf).contains("account number"));
+    assert!(text(&buf).contains("[ ] show"), "reveal toggle offered");
     dump(&buf, "unlock");
 
+    // Pasting lands in the field (the bug: paste was ignored on this screen).
+    super::App::unlock_paste(&mut app, "PASTED-TEXT");
+    assert!(app.unlock.as_ref().unwrap().input.contains("PASTED-TEXT"));
+    // Ctrl+R reveals the characters instead of dots.
+    app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+    assert!(
+        text(&render(&mut app)).contains("PASTED-TEXT")
+            && text(&render(&mut app)).contains("[x] shown")
+    );
+    // Clear it back out.
+    for _ in 0.."PASTED-TEXT".len() {
+        key(&mut app, KeyCode::Backspace);
+    }
+
     // Wrong code: error, still locked.
-    typ(&mut app, "WRONG-CODE-00000-00000-00000");
+    typ(&mut app, "WRONG-CODE-0000-0000");
     key(&mut app, KeyCode::Enter);
     assert!(app.unlock.is_some());
     assert!(text(&render(&mut app)).contains("Wrong recovery code"));

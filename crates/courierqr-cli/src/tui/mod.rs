@@ -149,6 +149,7 @@ pub(crate) struct App {
 pub(crate) struct Unlock {
     input: String,
     error: Option<String>,
+    reveal: bool,
 }
 
 /// This computer's public key + fingerprint, unlocking the vault if a code
@@ -251,6 +252,11 @@ impl App {
                     u.input.pop();
                 }
             }
+            KeyCode::Char('r') if ctrl => {
+                if let Some(u) = self.unlock.as_mut() {
+                    u.reveal = !u.reveal;
+                }
+            }
             KeyCode::Char(c) if !ctrl => {
                 if let Some(u) = self.unlock.as_mut() {
                     u.input.push(c);
@@ -261,11 +267,18 @@ impl App {
         }
     }
 
+    fn unlock_paste(&mut self, text: &str) {
+        if let Some(u) = self.unlock.as_mut() {
+            u.input.push_str(text.trim());
+            u.error = None;
+        }
+    }
+
     fn draw_unlock(&self, f: &mut Frame, area: Rect) {
         let u = self.unlock.as_ref().unwrap();
         let [_, mid, _] = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(9),
+            Constraint::Length(12),
             Constraint::Min(1),
         ])
         .areas(area);
@@ -278,21 +291,32 @@ impl App {
         let block = panel("keys locked");
         let inner = block.inner(center);
         f.render_widget(block, center);
-        let masked: String = "•".repeat(u.input.chars().count());
+        let shown = if u.reveal {
+            u.input.clone()
+        } else {
+            "•".repeat(u.input.chars().count())
+        };
+        let eye = if u.reveal { "[x] shown" } else { "[ ] show" };
         let mut lines = vec![
             Line::from(Span::styled(
                 "This computer's keys are encrypted at rest.",
                 Style::new().fg(TEXT),
             )),
             Line::from(Span::styled(
-                "Enter your recovery code to unlock them.",
+                "Enter your account number to unlock them.",
                 Style::new().fg(MUTED),
             )),
             Line::raw(""),
             Line::from(vec![
-                Span::styled("  code  ", Style::new().fg(MUTED)),
-                Span::styled(masked, Style::new().fg(ACCENT)),
+                Span::styled("  account  ", Style::new().fg(MUTED)),
+                Span::styled(shown, Style::new().fg(ACCENT)),
                 Span::styled("▏", Style::new().fg(ACCENT)),
+            ]),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("  ", Style::new()),
+                Span::styled(eye, Style::new().fg(if u.reveal { ACCENT } else { MUTED })),
+                Span::styled("  (ctrl+r)    enter to unlock", Style::new().fg(MUTED)),
             ]),
         ];
         if let Some(e) = &u.error {
@@ -313,6 +337,7 @@ impl App {
             if event::poll(Duration::from_millis(33))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
+                    Event::Paste(text) if self.unlock.is_some() => self.unlock_paste(&text),
                     Event::Paste(text) if self.tab == Tab::Send => send::on_paste(self, &text),
                     Event::Mouse(m) => {
                         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
