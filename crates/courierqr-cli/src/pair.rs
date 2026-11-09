@@ -10,8 +10,10 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use courierqr_core::secrecy::ExposeSecret;
-use courierqr_core::{fingerprint, generate_device_keys, validate_public_key};
+use courierqr_core::secrecy::{ExposeSecret, SecretString};
+use courierqr_core::{
+    Account, AccountNumber, DeviceKeys, fingerprint, generate_device_keys, validate_public_key,
+};
 
 pub fn config_dir() -> Result<PathBuf> {
     if let Some(d) = std::env::var_os("COURIERQR_CONFIG_DIR") {
@@ -253,6 +255,67 @@ pub fn vault_disable() -> Result<()> {
     save_identity(&id)
 }
 
+// ------------------------------------------------- account setup / recovery
+
+/// Write an account-derived identity for `label`, locked at rest under
+/// `unlock` (the account number's passphrase form).
+fn write_derived(label: &str, keys: &DeviceKeys, unlock: &str) -> Result<()> {
+    let text = format!(
+        "# CourierQR identity for this computer. SECRET: never share this file.\n\
+         # account-derived, device label: {label}\n\
+         # public keys: {}\n{}\n",
+        keys.public,
+        keys.secret.expose_secret()
+    );
+    save_identity(&Identity {
+        text,
+        lock_code: Some(unlock.to_owned()),
+    })
+}
+
+/// First-time setup: make a recovery seed and an account number, derive this
+/// device's keys from the seed + `label`, and store them encrypted at rest
+/// under the account number. Returns (account number, recovery seed) to show
+/// once.
+pub fn setup(label: &str, force: bool) -> Result<(String, SecretString)> {
+    if identity_file()?.exists() && !force {
+        bail!(
+            "an identity already exists here. Use --force to replace it (you'll re-pair devices)."
+        );
+    }
+    let seed = Account::generate();
+    let account = AccountNumber::generate();
+    let keys = seed.device_keys(label);
+    write_derived(label, &keys, &account.passphrase())?;
+    Ok((account.formatted(), seed.number()))
+}
+
+/// Set this device up from an existing recovery seed (e.g. a replacement
+/// device). Derives the same-label keys and locks them under a fresh account
+/// number for this device, which is returned to show once.
+pub fn restore(seed: &str, label: &str, force: bool) -> Result<String> {
+    if identity_file()?.exists() && !force {
+        bail!("an identity already exists here. Use --force to replace it.");
+    }
+    let seed = Account::parse(seed).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    let account = AccountNumber::generate();
+    let keys = seed.device_keys(label);
+    write_derived(label, &keys, &account.passphrase())?;
+    Ok(account.formatted())
+}
+
+/// The device label stored in an account-derived identity, if any.
+pub fn device_label() -> Result<Option<String>> {
+    let Some(id) = load_identity()? else {
+        return Ok(None);
+    };
+    Ok(id
+        .text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("# account-derived, device label: "))
+        .map(|s| s.trim().to_owned()))
+}
+
 /// Load this computer's identity, creating it (0600) on first use.
 /// Returns the public key.
 pub fn own_public_key() -> Result<String> {
@@ -428,5 +491,56 @@ mod tests {
 
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_then_restore_reproduces_the_same_device_key() {
+        let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let base = std::env::temp_dir().join(format!("cqr-setup-{}", std::process::id()));
+        let (d1, d2) = (base.join("a"), base.join("b"));
+        let _ = fs::remove_dir_all(&base);
+
+        // First device.
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &d1) };
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        let (account, seed) = setup("desktop", false).unwrap();
+        assert_eq!(account.len(), 19); // XXXX-XXXX-XXXX-XXXX
+        assert!(vault_is_locked().unwrap(), "keys encrypted at rest");
+        assert_eq!(
+            device_label().ok().flatten(),
+            None,
+            "label unreadable while locked"
+        );
+
+        // Unlock with the account number; capture this device's public key.
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &account) };
+        let pk1 = own_public_key_quiet().unwrap().0;
+        assert_eq!(device_label().unwrap().as_deref(), Some("desktop"));
+        assert!(
+            pk1.contains("age1pq1"),
+            "account-derived keys include post-quantum"
+        );
+
+        // A replacement device restores from the seed + same label.
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &d2) };
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        let account2 = restore(seed.expose_secret(), "desktop", false).unwrap();
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &account2) };
+        let pk2 = own_public_key_quiet().unwrap().0;
+        assert_eq!(pk1, pk2, "recovery reproduces the same keys and identity");
+
+        // A different device label gives a different key.
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", base.join("c")) };
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        let acc3 = restore(seed.expose_secret(), "iphone", false).unwrap();
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &acc3) };
+        assert_ne!(
+            own_public_key_quiet().unwrap().0,
+            pk1,
+            "distinct per device label"
+        );
+
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        let _ = fs::remove_dir_all(&base);
     }
 }

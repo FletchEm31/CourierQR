@@ -112,6 +112,28 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PairCmd,
     },
+    /// First-time setup: create your account number + recovery seed, and
+    /// this device's keys. Shows both secrets once.
+    Setup {
+        /// A short name for this device (e.g. "desktop", "iphone").
+        #[arg(long, default_value = "desktop")]
+        device: String,
+        /// Replace an existing identity.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Set up this device from your recovery seed (e.g. a replacement
+    /// machine). Prints a fresh account number for local unlock.
+    Restore {
+        /// Your recovery seed (from `setup`).
+        seed: String,
+        /// The device label to restore (must match the original to get the
+        /// same keys).
+        #[arg(long, default_value = "desktop")]
+        device: String,
+        #[arg(long)]
+        force: bool,
+    },
     /// Encrypt this computer's keys at rest with a recovery code (or a
     /// YubiKey). Without this, the key file is readable by anyone who gets
     /// the disk.
@@ -293,7 +315,39 @@ fn main() -> Result<()> {
         },
         Cmd::Keygen { out } => keygen(&out),
         Cmd::Vault { cmd } => vault(cmd),
+        Cmd::Setup { device, force } => setup(&device, force),
+        Cmd::Restore {
+            seed,
+            device,
+            force,
+        } => restore(&seed, &device, force),
     }
+}
+
+fn setup(device: &str, force: bool) -> Result<()> {
+    let (account, seed) = pair::setup(device, force)?;
+    println!("Your CourierQR identity is set up for device \"{device}\".\n");
+    println!("  Account number (unlocks this app):   {account}");
+    println!(
+        "  Recovery seed  (restores your keys): {}\n",
+        seed.expose_secret()
+    );
+    eprintln!("Write BOTH down and keep them safe and separate from this computer:");
+    eprintln!("  • the account number is what you type to unlock CourierQR day to day;");
+    eprintln!("  • the recovery seed is the ONLY way to rebuild your keys on a new device");
+    eprintln!("    (lose it and the keys are gone — it is shown once and cannot be recovered).");
+    eprintln!("\nKeys are encrypted at rest under your account number. To unlock without a");
+    eprintln!("prompt, set COURIERQR_RECOVERY_CODE to the account number.");
+    Ok(())
+}
+
+fn restore(seed: &str, device: &str, force: bool) -> Result<()> {
+    let account = pair::restore(seed, device, force)?;
+    println!("Restored device \"{device}\" from your recovery seed.\n");
+    println!("  New account number (unlocks this device): {account}\n");
+    eprintln!("Your keys match the ones on your other devices for this label, so anyone you");
+    eprintln!("paired with still recognizes you. Keep this account number to unlock this device.");
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -343,14 +397,20 @@ fn vault(cmd: VaultCmd) -> Result<()> {
             Ok(())
         }
         VaultCmd::Status => {
+            let locked = pair::vault_is_locked()?;
             println!(
                 "keys at rest: {}",
-                if pair::vault_is_locked()? {
-                    "encrypted (recovery code required)"
+                if locked {
+                    "encrypted (account number required)"
                 } else {
                     "plaintext (0600 file)"
                 }
             );
+            if let Some(label) = pair::device_label()? {
+                println!("device label: {label}");
+            } else if !locked {
+                println!("device:       not account-derived (run `courierqr setup`)");
+            }
             Ok(())
         }
     }
