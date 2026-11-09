@@ -262,6 +262,11 @@ impl HybridIdentity {
         HybridIdentity(xwing::from_seed(&random::<32>()))
     }
 
+    /// Deterministic identity from a 32-byte seed (for account-derived keys).
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        HybridIdentity(xwing::from_seed(seed))
+    }
+
     pub fn parse(s: &str) -> Result<Self, String> {
         let (hrp, data) = bech32::decode(s.trim())?;
         let data = Zeroizing::new(data);
@@ -319,7 +324,7 @@ impl age::Identity for HybridIdentity {
 
 /// Bech32 (BIP-173 checksum) without the 90-character limit: post-quantum
 /// keys are ~2000 characters, which age allows.
-mod bech32 {
+pub(crate) mod bech32 {
     const CHARSET: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
     const GEN: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
 

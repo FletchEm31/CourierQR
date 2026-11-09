@@ -32,6 +32,7 @@
 //! assert_eq!(file.data, b"# hello");
 //! ```
 
+pub mod account;
 mod crypto;
 mod error;
 pub mod frame;
@@ -45,6 +46,7 @@ mod sender;
 pub mod transport;
 pub mod vault;
 
+pub use account::Account;
 pub use crypto::{
     DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, Method, OpenKey, SealKey,
     fingerprint, generate_device_keys, generate_pq_identity, public_key_of, split_key_set,
