@@ -1,7 +1,3 @@
-Yes—this version includes the encryption types, metadata stripping, RaptorQ, device separation, recovery, and planned network features. Your screenshots also show that the currently paired phone needs re-pairing before post-quantum mode is available; the README preserves that distinction. [ppl-ai-file-upload.s3.amazonaws](https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/images/1351163241/d3626d59-bbc9-42a6-ba0a-bf92dc6f50c4/Screenshot-From-2026-11-09-05-04-58.jpg)
-
-***
-
 # CourierQR
 
 Encrypted messaging and file transfer through animated QR codes.
