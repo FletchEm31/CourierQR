@@ -451,3 +451,45 @@ fn every_screen_renders_and_works() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn locked_vault_shows_unlock_gate_then_opens() {
+    let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("cqr-tui-unlock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("dl")).unwrap();
+    // SAFETY: serialized by ENV_LOCK.
+    unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", dir.join("cfg")) };
+    unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+
+    // Create and lock this computer's identity.
+    crate::pair::own_public_key_quiet().unwrap();
+    let code = courierqr_core::recovery_code();
+    crate::pair::vault_enable_with(&code).unwrap();
+
+    let mut app = App::new(Opts {
+        camera: None,
+        camera_file: None,
+        out: dir.join("dl"),
+    });
+    assert!(app.unlock.is_some(), "locked vault prompts for a code");
+    assert!(app.own_key.is_none(), "keys stay closed until unlocked");
+    let buf = render(&mut app);
+    assert!(text(&buf).contains("keys locked") && text(&buf).contains("recovery code"));
+    dump(&buf, "unlock");
+
+    // Wrong code: error, still locked.
+    typ(&mut app, "WRONG-CODE-00000-00000-00000");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.unlock.is_some());
+    assert!(text(&render(&mut app)).contains("Wrong recovery code"));
+
+    // Right code: opens, keys load, gate gone.
+    typ(&mut app, &code);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.unlock.is_none(), "correct code unlocks");
+    assert!(app.own_key.is_some(), "keys available after unlock");
+
+    unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+    let _ = std::fs::remove_dir_all(dir);
+}

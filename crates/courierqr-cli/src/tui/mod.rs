@@ -22,7 +22,7 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::pair;
@@ -139,14 +139,32 @@ pub(crate) struct App {
     tab_hits: Vec<(Rect, Tab)>,
     /// This computer's public key + fingerprint (created on first run).
     pub(crate) own_key: Option<(String, String)>,
+    pub(crate) unlock: Option<Unlock>,
     pub(crate) out: PathBuf,
+}
+
+/// Startup gate shown when the key vault is encrypted at rest and no code
+/// has been supplied yet (`courierqr vault on`).
+#[derive(Default)]
+pub(crate) struct Unlock {
+    input: String,
+    error: Option<String>,
+}
+
+/// This computer's public key + fingerprint, unlocking the vault if a code
+/// is already available (env var).
+fn load_own_key() -> Option<(String, String)> {
+    pair::own_public_key_quiet()
+        .ok()
+        .and_then(|(pk, _)| courierqr_core::fingerprint(&pk).ok().map(|fp| (pk, fp)))
 }
 
 impl App {
     pub(crate) fn new(opts: Opts) -> Self {
-        let own_key = pair::own_public_key_quiet()
-            .ok()
-            .and_then(|(pk, _)| courierqr_core::fingerprint(&pk).ok().map(|fp| (pk, fp)));
+        let locked = pair::vault_is_locked().unwrap_or(false);
+        let own_key = load_own_key();
+        // Locked, and we couldn't open it from the environment: prompt.
+        let unlock = (locked && own_key.is_none()).then(Unlock::default);
         let mut sources: Vec<(SourceSpec, String)> = Vec::new();
         if let Some(f) = &opts.camera_file {
             sources.push((
@@ -177,8 +195,102 @@ impl App {
             quit: false,
             tab_hits: Vec::new(),
             own_key,
+            unlock,
             out: opts.out,
         }
+    }
+
+    /// Try the typed recovery code. On success the keys load for the rest of
+    /// the session; on failure the prompt stays up with an error.
+    fn try_unlock(&mut self, code: &str) {
+        // Thread the code to pair::own_identity (and later auto-unlocks) for
+        // this process only. Startup is single-threaded here; no worker yet.
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", code.trim()) };
+        match load_own_key() {
+            Some(k) => {
+                self.own_key = Some(k);
+                self.unlock = None;
+                self.toast("keys unlocked", false);
+            }
+            None => {
+                unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+                if let Some(u) = self.unlock.as_mut() {
+                    u.error = Some("Wrong recovery code — try again.".into());
+                    u.input.clear();
+                }
+            }
+        }
+    }
+
+    fn unlock_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        match k.code {
+            KeyCode::Esc => self.quit = true,
+            KeyCode::Char('c') if ctrl => self.quit = true,
+            KeyCode::Enter => {
+                let code = self
+                    .unlock
+                    .as_ref()
+                    .map(|u| u.input.clone())
+                    .unwrap_or_default();
+                if !code.trim().is_empty() {
+                    self.try_unlock(&code);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(u) = self.unlock.as_mut() {
+                    u.input.pop();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(u) = self.unlock.as_mut() {
+                    u.input.push(c);
+                    u.error = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_unlock(&self, f: &mut Frame, area: Rect) {
+        let u = self.unlock.as_ref().unwrap();
+        let [_, mid, _] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(9),
+            Constraint::Min(1),
+        ])
+        .areas(area);
+        let [_, center, _] = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(56),
+            Constraint::Min(1),
+        ])
+        .areas(mid);
+        let block = panel("keys locked");
+        let inner = block.inner(center);
+        f.render_widget(block, center);
+        let masked: String = "•".repeat(u.input.chars().count());
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "This computer's keys are encrypted at rest.",
+                Style::new().fg(TEXT),
+            )),
+            Line::from(Span::styled(
+                "Enter your recovery code to unlock them.",
+                Style::new().fg(MUTED),
+            )),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("  code  ", Style::new().fg(MUTED)),
+                Span::styled(masked, Style::new().fg(ACCENT)),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ]),
+        ];
+        if let Some(e) = &u.error {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))));
+        }
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
     }
 
     pub(crate) fn toast(&mut self, msg: impl Into<String>, error: bool) {
@@ -254,6 +366,10 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, k: KeyEvent) {
+        // The unlock gate swallows everything until the vault is open.
+        if self.unlock.is_some() {
+            return self.unlock_key(k);
+        }
         // Command palette has focus when open.
         if let Some(p) = self.palette.as_mut() {
             match k.code {
@@ -327,6 +443,16 @@ impl App {
     pub(crate) fn draw(&mut self, f: &mut Frame) {
         let area = f.area();
         f.render_widget(Block::default().style(Style::new().bg(BG)), area);
+
+        if self.unlock.is_some() {
+            let logo = self.fitting_logo(area.width);
+            let header_h = (logo.height().max(4) + 2) as u16;
+            let [header, body] =
+                Layout::vertical([Constraint::Length(header_h), Constraint::Min(4)]).areas(area);
+            self.draw_header(f, header, logo);
+            self.draw_unlock(f, body);
+            return;
+        }
 
         // While transmitting, the codes need every row: shrink the header.
         let logo = if self.tab == Tab::Send && self.send.live.is_some() {
