@@ -47,6 +47,13 @@ file ◄─ unpack ◄─ age decrypt ◄─ RaptorQ decode ◄─ CRC check ◄
 
 Run `courierqr` with no arguments (or `courierqr ui`) for a full-screen terminal app:
 
+Tabs: **1 Send · 2 Receive · 3 Devices**.
+
+- **Send:** type or paste a note, pick a paired phone (or a passphrase), and see exactly
+  how it will be protected: the encryption method, who can open it, that metadata is
+  stripped, the code speed (`←/→`) and size. `Ctrl+S` turns the terminal into the
+  transmitter, a loop of QR codes sized to the window. `Space` pauses, `↑/↓` change speed,
+  `Esc` stops.
 - **Receive:** a live camera view drawn right in the terminal, a pieces gauge, a
   pieces-per-second graph, and a breakdown of any QR codes it turned away. When the
   transfer completes it unlocks with this computer's key (or asks for the passphrase) and
@@ -56,9 +63,6 @@ Run `courierqr` with no arguments (or `courierqr ui`) for a full-screen terminal
   time per frame; the sensor's max resolution, supported formats and autofocus. A status
   line says what's limiting the read rate (camera dropping frames in low light, decoder
   falling behind, or no codes in view).
-- **Send:** type or paste a note, pick a paired phone (or a passphrase), press `Ctrl+S`,
-  and the terminal itself becomes the transmitter: the note is encrypted and shown as a
-  loop of QR codes sized to the window. `Space` pauses, `↑/↓` change speed, `Esc` stops.
 - **Devices:** paired phones with their fingerprints. Press `a` to pair one and confirm its
   fingerprint before saving, or `d d` to forget one. This computer's key is shown as a
   scannable QR code for the phone.
@@ -67,6 +71,22 @@ Run `courierqr` with no arguments (or `courierqr ui`) for a full-screen terminal
 Built with [ratatui](https://ratatui.rs). The UI tests render every screen into ratatui's
 test backend, run the real camera worker on a generated recording, and decode the Send
 tab's on-screen QR codes back into the typed note.
+
+## Metadata stripping
+
+Everything is scrubbed **before** encryption, automatically, in every sender (CLI, terminal
+UI and phone app), without re-encoding, so quality is untouched:
+
+| Content | Removed | Kept |
+|---|---|---|
+| JPEG photos | EXIF (GPS, camera make/model, dates, serials), XMP, IPTC, comments, depth/gain-map images after the photo | orientation (so it stays upright), colour profile |
+| PNG / WebP | text fields (author, software, XMP), timestamps, EXIF | pixels, colour info, animation |
+| MP4 / MOV video | location, device and software tags, XMP, creation/modification dates | audio/video untouched (tags are blanked in place, so nothing is remuxed) |
+| Text | byte-order marks, zero-width and other invisible characters, bidi overrides, smuggling variation selectors and tag characters, look-alike spaces | emoji sequences and flags |
+| File names | folder paths; typed notes are just `note.txt` (no timestamp) | the file name itself |
+
+Formats it can't clean yet (HEIC, PDF, Office files, archives) are sent unchanged **and the
+sender says so**. `courierqr send --keep-metadata` sends a byte-exact copy.
 
 ## Quick start (Linux)
 

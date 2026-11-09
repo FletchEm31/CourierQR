@@ -159,6 +159,11 @@ struct SealArgs {
     /// and slower for the receiver to open.
     #[arg(long, default_value_t = DEFAULT_SCRYPT_WORK_FACTOR, value_parser = clap::value_parser!(u8).range(10..=20))]
     scrypt_cost: u8,
+    /// Send the file byte-for-byte. By default photo/video metadata (GPS,
+    /// camera, dates), folder names and hidden text characters are stripped
+    /// before encryption.
+    #[arg(long)]
+    keep_metadata: bool,
 }
 
 #[derive(Args)]
@@ -307,7 +312,20 @@ fn prepare(file: &Path, args: &SealArgs, layout: &Layout) -> Result<Transmission
     let config = FrameConfig {
         max_frame_bytes: layout.frame_bytes(),
     };
-    Ok(Transmission::new(name, &data, &key, config)?)
+    let tx = if args.keep_metadata {
+        Transmission::new_exact(name, &data, &key, config)?
+    } else {
+        Transmission::new(name, &data, &key, config)?
+    };
+    let r = tx.scrub_report();
+    if args.keep_metadata {
+        eprintln!("metadata: kept (--keep-metadata), sending the file byte-for-byte");
+    } else if r.cleaned {
+        eprintln!("metadata: {}", r.summary());
+    } else {
+        eprintln!("warning: {}", r.summary());
+    }
+    Ok(tx)
 }
 
 fn summary(tx: &Transmission, layout: &Layout, fps: Option<f64>) {

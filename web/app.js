@@ -497,8 +497,8 @@ $("pick").addEventListener("change", async (e) => {
 $("sendtext").addEventListener("input", () => {
   const text = $("sendtext").value;
   if (text.trim()) {
-    const stamp = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
-    sendFile = { name: `note_${stamp}.txt`, data: new TextEncoder().encode(text) };
+    // No timestamp in the name: it would be metadata about when you wrote it.
+    sendFile = { name: "note.txt", data: new TextEncoder().encode(text) };
     $("pickname").textContent = "Choose a file…";
     $("pick").value = "";
   } else if (!$("pick").files?.length) {
@@ -534,7 +534,7 @@ function onTxStarted(m) {
     return;
   }
   $("sendpass").value = "";
-  Object.assign(tx, { running: true, paused: false, queue: [], waiting: false, shown: 0, k: m.sourceFrames });
+  Object.assign(tx, { running: true, paused: false, queue: [], waiting: false, shown: 0, k: m.sourceFrames, scrub: m.scrub || "" });
   $("broadcast").hidden = false;
   $("bpause").textContent = "Pause";
   sizeCanvas();
@@ -563,7 +563,8 @@ function tick() {
   if (!codes) return; // encoder fell behind; keep showing the last set
   drawCodes(codes);
   tx.shown += codes.length;
-  $("bstatus").textContent = `${tx.shown} codes shown · receiver needs ≈${tx.k} · ${tx.fps}/s`;
+  $("bstatus").textContent = `${tx.shown} codes shown · receiver needs ≈${tx.k} · ${tx.fps}/s` +
+    (tx.scrub ? ` · ${tx.scrub}` : "");
 }
 
 function sizeCanvas() {

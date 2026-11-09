@@ -39,6 +39,7 @@ mod payload;
 mod receiver;
 #[cfg(feature = "scan")]
 pub mod scan;
+pub mod scrub;
 mod sender;
 
 pub use crypto::{
@@ -49,6 +50,7 @@ pub use error::{Error, Result};
 pub use frame::FrameError;
 pub use payload::ReceivedFile;
 pub use receiver::{Accepted, Progress, Receiver, open};
+pub use scrub::{ScrubReport, scrub};
 pub use sender::{FrameConfig, FrameStream, Transmission, qr_capacity};
 
 /// Re-exported so callers can build keys without depending on `age` directly.

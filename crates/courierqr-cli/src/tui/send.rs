@@ -41,6 +41,7 @@ pub(crate) struct Broadcast {
     to: String,
     name: String,
     bytes: usize,
+    scrub: String,
 }
 
 pub(crate) struct SendTab {
@@ -51,6 +52,8 @@ pub(crate) struct SendTab {
     pub(crate) focus: Focus,
     pub(crate) error: Option<String>,
     pub(crate) live: Option<Broadcast>,
+    /// Codes per second for the next send (↑/↓ also adjust it live).
+    pub(crate) fps: u32,
     /// QR version that fits the body area at the last draw.
     fit_version: i16,
 }
@@ -64,6 +67,7 @@ impl SendTab {
             focus: Focus::None,
             error: None,
             live: None,
+            fps: 8,
             fit_version: 10,
         }
     }
@@ -132,8 +136,8 @@ fn start(app: &mut App) {
             )
         }
     };
-    let stamp = chrono_stamp();
-    let name = format!("note_{stamp}.txt");
+    // No timestamp in the name: it would be metadata about when you wrote it.
+    let name = "note.txt".to_string();
     let version = s.fit_version;
     let cfg = FrameConfig {
         max_frame_bytes: crate::render::byte_capacity(version),
@@ -141,18 +145,20 @@ fn start(app: &mut App) {
     match Transmission::new(&name, s.text.as_bytes(), &key, cfg) {
         Ok(tx) => {
             let needed = tx.source_frames();
+            let scrub = tx.scrub_report().summary();
             s.live = Some(Broadcast {
                 stream: tx.into_frames(),
                 version,
                 code: None,
                 shown: 0,
                 needed,
-                fps: 8,
+                fps: s.fps,
                 paused: false,
                 last: Instant::now(),
                 to,
                 name,
                 bytes: s.text.len(),
+                scrub,
             });
             s.error = None;
             s.passphrase.clear();
@@ -160,30 +166,6 @@ fn start(app: &mut App) {
         }
         Err(e) => s.error = Some(e.to_string()),
     }
-}
-
-/// Local-time-free stamp (UTC) without pulling in a date crate.
-fn chrono_stamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    // Civil-from-days (Howard Hinnant), good for 1970..9999.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02}_{:02}-{:02}",
-        rem / 3600,
-        (rem % 3600) / 60
-    )
 }
 
 pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
@@ -228,10 +210,10 @@ pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
             s.text.push(c);
             s.error = None;
         }
-        (Focus::Recipient, KeyCode::Up | KeyCode::Left) => {
-            s.recipient = s.recipient.saturating_sub(1)
-        }
-        (Focus::Recipient, KeyCode::Down | KeyCode::Right) => {
+        (Focus::Recipient | Focus::None, KeyCode::Left) => s.fps = s.fps.saturating_sub(1).max(1),
+        (Focus::Recipient | Focus::None, KeyCode::Right) => s.fps = (s.fps + 1).min(20),
+        (Focus::Recipient, KeyCode::Up) => s.recipient = s.recipient.saturating_sub(1),
+        (Focus::Recipient, KeyCode::Down) => {
             s.recipient = (s.recipient + 1).min(SendTab::devices().len())
         }
         (Focus::Recipient, KeyCode::Enter) => start(app),
@@ -264,7 +246,13 @@ pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         return vec![("space", "pause"), ("↑↓", "speed"), ("esc", "stop")];
     }
     match s.focus {
-        Focus::None => vec![("enter", "type a message")],
+        Focus::None => vec![("enter", "type a message"), ("←→", "speed")],
+        Focus::Recipient => vec![
+            ("↑↓", "recipient"),
+            ("←→", "speed"),
+            ("^s", "send"),
+            ("tab", "next field"),
+        ],
         _ => vec![
             ("^s", "send"),
             ("tab", "next field"),
@@ -276,7 +264,7 @@ pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
 pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     // Largest QR version whose code (plus quiet zone) fits the body:
     // one module per column, two per row (half blocks).
-    let room = (area.width.saturating_sub(2) as i32).min(area.height.saturating_sub(4) as i32 * 2);
+    let room = (area.width.saturating_sub(2) as i32).min(area.height.saturating_sub(5) as i32 * 2);
     app.send.fit_version = (MIN_VERSION..=MAX_VERSION)
         .rev()
         .find(|v| 17 + 4 * *v as i32 + 8 <= room)
@@ -288,7 +276,7 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     let s = &app.send;
     let devices = SendTab::devices();
     let [left, right] =
-        Layout::horizontal([Constraint::Min(40), Constraint::Length(46)]).areas(area);
+        Layout::horizontal([Constraint::Min(40), Constraint::Length(64)]).areas(area);
 
     // Compose
     let focused = matches!(s.focus, Focus::Text);
@@ -320,7 +308,7 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     );
 
     // Recipient + summary
-    let block = panel("send to");
+    let block = panel("send to · encryption");
     let rin = block.inner(right);
     f.render_widget(block, right);
     let rfocus = matches!(s.focus, Focus::Recipient);
@@ -376,23 +364,75 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
             Style::new().fg(MUTED),
         )));
     }
+    // Encryption: what protects it, and who can open it.
+    let k = |t: &str| Span::styled(format!("{t:<9}"), Style::new().fg(MUTED));
+    let v = |t: String| Span::styled(t, Style::new().fg(TEXT));
+    let ok = |t: String| Span::styled(t, Style::new().fg(ACCENT));
+    let head = |t: &'static str| {
+        Line::from(Span::styled(
+            t,
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+    };
     lines.push(Line::raw(""));
+    lines.push(head("encryption"));
+    match devices.get(s.recipient) {
+        Some((n, _)) => {
+            lines.push(Line::from(vec![
+                k("method"),
+                v("age: X25519 key + ChaCha20-Poly1305".into()),
+            ]));
+            lines.push(Line::from(vec![
+                k("opens on"),
+                ok(format!("{n} only")),
+                v(" (secret key never leaves it)".into()),
+            ]));
+        }
+        None => {
+            lines.push(Line::from(vec![
+                k("method"),
+                v("age: scrypt passphrase + ChaCha20-Poly1305".into()),
+            ]));
+            lines.push(Line::from(vec![
+                k("opens on"),
+                v("anything given the passphrase (4+ random words is best)".into()),
+            ]));
+        }
+    }
+    lines.push(Line::from(vec![
+        k("metadata"),
+        ok("stripped automatically".into()),
+        v(" before encryption".into()),
+    ]));
+    lines.push(Line::from(vec![
+        k("visible"),
+        v("codes look random; name and contents are encrypted (length is not)".into()),
+    ]));
+    lines.push(Line::raw(""));
+    lines.push(head("transmission"));
     let cap = crate::render::byte_capacity(s.fit_version).saturating_sub(28);
     let est = (s.text.len() + 250).div_ceil(cap.max(1));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{} bytes · ~{} codes at QR v{} · ≈{:.0} s at 8/s",
+    lines.push(Line::from(vec![
+        k("speed"),
+        ok(format!("{} codes/s", s.fps)),
+        v("  (←/→ to change)".into()),
+    ]));
+    lines.push(Line::from(vec![
+        k("QR size"),
+        v(format!(
+            "v{}, the largest that fits this window",
+            s.fit_version
+        )),
+    ]));
+    lines.push(Line::from(vec![
+        k("estimate"),
+        v(format!(
+            "{} bytes · ~{} codes · ≈{:.0} s",
             s.text.len(),
             est,
-            s.fit_version,
-            (est as f64 / 8.0).ceil()
-        ),
-        Style::new().fg(MUTED),
-    )));
-    lines.push(Line::from(Span::styled(
-        "(text usually compresses; often fewer codes)",
-        Style::new().fg(MUTED),
-    )));
+            (est as f64 / s.fps as f64).ceil()
+        )),
+    ]));
     lines.push(Line::raw(""));
     lines.push(Line::from(vec![
         Span::styled(
@@ -422,7 +462,7 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
 
 fn draw_live(app: &mut App, f: &mut Frame, area: Rect) {
     let b = app.send.live.as_ref().unwrap();
-    let [status, qr] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(area);
+    let [status, qr] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(area);
     let state = if b.paused { "PAUSED" } else { "SENDING" };
     f.render_widget(
         Paragraph::new(vec![
@@ -436,6 +476,10 @@ fn draw_live(app: &mut App, f: &mut Frame, area: Rect) {
                     b.shown, b.needed, b.fps, b.version
                 ),
                 Style::new().fg(MUTED),
+            )),
+            Line::from(Span::styled(
+                format!("  metadata · {}", b.scrub),
+                Style::new().fg(ACCENT),
             )),
         ])
         .style(Style::new().bg(BG)),

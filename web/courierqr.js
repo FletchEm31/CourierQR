@@ -169,7 +169,8 @@ export class CourierQR {
       this.#withBytes(data, (dp, dl) =>
         this.#withBytes(kb, (kp, kl) => x.cq_tx_start(np, nl, dp, dl, kp, kl, mode === "device" ? 1 : 0, version))));
     if (rc !== 0) return { ok: false, error: fromUtf8.decode(this.#copyOut(x.cq_error_ptr(), x.cq_error_len())) };
-    return { ok: true, sourceFrames: x.cq_tx_source_frames(), ciphertextLen: x.cq_tx_ciphertext_len() };
+    const scrub = fromUtf8.decode(this.#copyOut(x.cq_text_ptr(), x.cq_tx_report()));
+    return { ok: true, sourceFrames: x.cq_tx_source_frames(), ciphertextLen: x.cq_tx_ciphertext_len(), scrub };
   }
 
   /** Next frame as a QR matrix {width, modules}, or null if not sending. */

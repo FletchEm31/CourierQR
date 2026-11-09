@@ -507,6 +507,19 @@ pub unsafe extern "C" fn cq_tx_start(
     }
 }
 
+/// One-line summary of the metadata removed before encryption, into the
+/// text buffer (`cq_text_ptr/len`). Returns its length (0 if not sending).
+#[unsafe(no_mangle)]
+pub extern "C" fn cq_tx_report() -> usize {
+    with(|s| {
+        s.text =
+            s.tx.as_ref()
+                .map(|(f, _)| f.transmission().scrub_report().summary())
+                .unwrap_or_default();
+        s.text.len()
+    })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn cq_tx_source_frames() -> u32 {
     with(|s| {

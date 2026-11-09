@@ -7,6 +7,7 @@ use raptorq::{Encoder, ObjectTransmissionInformation};
 
 use crate::crypto::{self, SealKey};
 use crate::frame::{self, MIN_FRAME_BYTES, OVERHEAD_BYTES};
+use crate::scrub::ScrubReport;
 use crate::{Error, MAX_TRANSFER_BYTES, Result, payload};
 
 /// Binary (byte-mode) capacity of common QR versions at error-correction
@@ -46,11 +47,22 @@ pub struct Transmission {
     oti_bytes: [u8; 12],
     encoder: Encoder,
     ciphertext_len: usize,
+    report: ScrubReport,
 }
 
 impl Transmission {
-    /// Package, compress, encrypt and fountain-encode a file.
+    /// Strip metadata, then package, compress, encrypt and fountain-encode
+    /// a file. What was removed is in [`scrub_report`](Self::scrub_report).
     pub fn new(name: &str, data: &[u8], key: &SealKey, config: FrameConfig) -> Result<Self> {
+        let clean = crate::scrub::scrub(name, data);
+        let mut tx = Self::new_exact(&clean.name, &clean.data, key, config)?;
+        tx.report = clean.report;
+        Ok(tx)
+    }
+
+    /// Like [`new`](Self::new) but sends the bytes exactly as given, with
+    /// no metadata scrubbing (for when a byte-identical copy matters).
+    pub fn new_exact(name: &str, data: &[u8], key: &SealKey, config: FrameConfig) -> Result<Self> {
         if config.max_frame_bytes < MIN_FRAME_BYTES {
             return Err(Error::FrameBudgetTooSmall(config.max_frame_bytes));
         }
@@ -70,7 +82,17 @@ impl Transmission {
             oti_bytes: oti.serialize(),
             encoder,
             ciphertext_len: ciphertext.len(),
+            report: ScrubReport {
+                kind: "exact copy",
+                removed: vec![],
+                cleaned: false,
+            },
         })
+    }
+
+    /// What metadata scrubbing found and removed before encryption.
+    pub fn scrub_report(&self) -> &ScrubReport {
+        &self.report
     }
 
     /// Random id that lets receivers ignore frames from other transfers.

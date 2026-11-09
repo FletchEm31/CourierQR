@@ -110,7 +110,8 @@ fn clean_channel_needs_about_source_frames() {
     );
 
     let file = rx.open(&OpenKey::passphrase(PASS)).unwrap().unwrap();
-    assert_eq!(file.name, "notes/field.md");
+    // Folders are stripped from names before encryption.
+    assert_eq!(file.name, "field.md");
     assert_eq!(file.data, data);
 }
 

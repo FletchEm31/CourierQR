@@ -186,6 +186,8 @@ fn every_screen_renders_and_works() {
     .unwrap();
     recording(&tx, &rec);
     let mut app = new_app(&rec);
+    assert_eq!(app.tab, super::Tab::Send, "opens on Send (tab 1)");
+    key(&mut app, KeyCode::Char('2'));
     // Shadow is the logo; narrow terminals fall back to the smaller marks.
     let buf = render(&mut app);
     assert!(
@@ -299,6 +301,7 @@ fn every_screen_renders_and_works() {
     .unwrap();
     recording(&tx3, &rec3);
     let mut app = new_app(&rec3);
+    app.tab = super::Tab::Receive;
     app.receive.phase = Phase::Scanning;
     let (txc, rxc) = mpsc::channel();
     let stop = AtomicBool::new(false);
@@ -318,7 +321,7 @@ fn every_screen_renders_and_works() {
     assert!(matches!(app.receive.phase, Phase::Done { .. }));
 
     // ---- 4. devices: add flow with fingerprint confirm, list, delete
-    key(&mut app, KeyCode::Char('2'));
+    key(&mut app, KeyCode::Char('3'));
     let phone_keys = courierqr_core::generate_device_keys();
     let phone = phone_keys.public.clone();
     let fp = courierqr_core::fingerprint(&phone).unwrap();
@@ -361,8 +364,6 @@ fn every_screen_renders_and_works() {
     let buf = render(&mut app);
     assert!(text(&buf).contains("command palette") && text(&buf).contains("Go to Send"));
     dump(&buf, "palette");
-    key(&mut app, KeyCode::Down);
-    key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
     assert_eq!(app.tab, super::Tab::Send);
 
@@ -379,12 +380,17 @@ fn every_screen_renders_and_works() {
         }
         typ(&mut app, line);
     }
-    super::send::on_paste(&mut app, "\npasted: 1 2 3");
+    // A zero-width space (a classic copy-tracking watermark) rides along in
+    // the paste; it must not survive to the receiver.
+    super::send::on_paste(&mut app, "\npasted: 1\u{200B} 2 3");
+    assert_eq!(app.send.text, format!("{typed}\npasted: 1\u{200B} 2 3"));
     let typed = format!("{typed}\npasted: 1 2 3");
-    assert_eq!(app.send.text, typed);
     let buf = render(&mut app);
     let t = text(&buf);
     assert!(t.contains("send to") && t.contains("phone") && t.contains("Gate code 4471#"));
+    assert!(
+        t.contains("phone only") && t.contains("stripped automatically") && t.contains("8 codes/s")
+    );
     dump(&buf, "send-compose");
     // Digits typed into the message stay in the message (no tab switch).
     assert_eq!(app.tab, super::Tab::Send);
@@ -393,6 +399,11 @@ fn every_screen_renders_and_works() {
     assert!(app.send.live.is_some(), "{:?}", app.send.error);
     let buf = render(&mut app);
     assert!(text(&buf).contains("SENDING"));
+    assert!(
+        text(&buf).contains("removed 1 invisible character"),
+        "{}",
+        text(&buf)
+    );
     dump(&buf, "send-live");
 
     let mut rx = Receiver::new();
@@ -432,7 +443,7 @@ fn every_screen_renders_and_works() {
     let secret = phone_keys.secret.expose_secret().to_string();
     let got = rx.open(&OpenKey::identity(secret)).unwrap().unwrap();
     assert_eq!(got.data, typed.as_bytes());
-    assert!(got.name.starts_with("note_") && got.name.ends_with(".txt"));
+    assert_eq!(got.name, "note.txt", "no timestamp in the name");
     key(&mut app, KeyCode::Esc);
     assert!(app.send.live.is_none());
 

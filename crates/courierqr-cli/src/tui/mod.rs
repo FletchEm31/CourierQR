@@ -61,7 +61,7 @@ pub(crate) enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::Receive, Tab::Devices, Tab::Send];
+    const ALL: [Tab; 3] = [Tab::Send, Tab::Receive, Tab::Devices];
     fn label(self) -> &'static str {
         match self {
             Tab::Receive => "Receive",
@@ -101,9 +101,9 @@ enum Command {
 }
 
 const COMMANDS: &[(Command, &str)] = &[
+    (Command::GoSend, "Go to Send"),
     (Command::GoReceive, "Go to Receive"),
     (Command::GoDevices, "Go to Devices"),
-    (Command::GoSend, "Go to Send"),
     (Command::StartStop, "Start / stop the camera"),
     (Command::NextCamera, "Switch camera"),
     (Command::AddDevice, "Pair a new device"),
@@ -168,7 +168,7 @@ impl App {
             }
         }
         App {
-            tab: Tab::Receive,
+            tab: Tab::Send,
             palette: None,
             receive: receive::ReceiveTab::new(sources),
             devices: devices::DevicesTab::new(),
@@ -307,9 +307,9 @@ impl App {
         }
         match k.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('1') => self.tab = Tab::Receive,
-            KeyCode::Char('2') => self.tab = Tab::Devices,
-            KeyCode::Char('3') => self.tab = Tab::Send,
+            KeyCode::Char('1') => self.tab = Tab::Send,
+            KeyCode::Char('2') => self.tab = Tab::Receive,
+            KeyCode::Char('3') => self.tab = Tab::Devices,
             KeyCode::Tab => {
                 let i = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
                 self.tab = Tab::ALL[(i + 1) % Tab::ALL.len()];
