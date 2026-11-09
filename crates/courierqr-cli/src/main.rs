@@ -112,6 +112,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: PairCmd,
     },
+    /// Encrypt this computer's keys at rest with a recovery code (or a
+    /// YubiKey). Without this, the key file is readable by anyone who gets
+    /// the disk.
+    Vault {
+        #[command(subcommand)]
+        cmd: VaultCmd,
+    },
     /// List webcams usable with `receive --camera`.
     #[cfg(feature = "camera")]
     Cameras,
@@ -285,6 +292,67 @@ fn main() -> Result<()> {
             PairCmd::Remove { name } => pair::remove(&name),
         },
         Cmd::Keygen { out } => keygen(&out),
+        Cmd::Vault { cmd } => vault(cmd),
+    }
+}
+
+#[derive(Subcommand)]
+enum VaultCmd {
+    /// Turn on at-rest encryption. Prints a one-time recovery code.
+    On,
+    /// Turn off at-rest encryption (needs the current code to unlock first).
+    Off,
+    /// Show whether the keys are encrypted at rest.
+    Status,
+}
+
+fn vault(cmd: VaultCmd) -> Result<()> {
+    match cmd {
+        VaultCmd::On => {
+            if pair::vault_is_locked()? {
+                eprintln!("already encrypted at rest. Use `vault off` first to change the code.");
+                return Ok(());
+            }
+            let code = courierqr_core::recovery_code();
+            pair::vault_enable_with(&code)?;
+            println!(
+                "Your keys are now encrypted at rest.
+"
+            );
+            println!(
+                "  Recovery code:  {code}
+"
+            );
+            eprintln!(
+                "Write this down and keep it somewhere safe and separate from this computer."
+            );
+            eprintln!(
+                "You'll need it to use your keys after a reboot. It is shown ONCE and is the"
+            );
+            eprintln!("only way in — CourierQR cannot recover it for you. To unlock without the");
+            eprintln!("prompt (e.g. in scripts), set COURIERQR_RECOVERY_CODE.");
+            Ok(())
+        }
+        VaultCmd::Off => {
+            if !pair::vault_is_locked()? {
+                eprintln!("keys are not encrypted at rest; nothing to do.");
+                return Ok(());
+            }
+            pair::vault_disable()?;
+            eprintln!("at-rest encryption removed. The key file is now plaintext (0600).");
+            Ok(())
+        }
+        VaultCmd::Status => {
+            println!(
+                "keys at rest: {}",
+                if pair::vault_is_locked()? {
+                    "encrypted (recovery code required)"
+                } else {
+                    "plaintext (0600 file)"
+                }
+            );
+            Ok(())
+        }
     }
 }
 

@@ -43,6 +43,7 @@ pub mod scan;
 pub mod scrub;
 mod sender;
 pub mod transport;
+pub mod vault;
 
 pub use crypto::{
     DEFAULT_SCRYPT_WORK_FACTOR, DeviceKeys, MAX_SCRYPT_WORK_FACTOR, Method, OpenKey, SealKey,
@@ -56,6 +57,7 @@ pub use receiver::{Accepted, Progress, Receiver, open};
 pub use scrub::{ScrubReport, scrub};
 pub use sender::{FrameConfig, FrameStream, Transmission, qr_capacity};
 pub use transport::Envelope;
+pub use vault::recovery_code;
 
 /// Re-exported so callers can build keys without depending on `age` directly.
 pub use age::secrecy;

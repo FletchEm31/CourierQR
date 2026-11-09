@@ -6,7 +6,7 @@
 //! nothing in this file is secret.
 
 use std::fs;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -141,21 +141,116 @@ fn identity_file() -> Result<PathBuf> {
     Ok(config_dir()?.join("identity"))
 }
 
+/// The stored identity file's full contents, plus the recovery code it was
+/// locked with (so a rewrite can re-lock it the same way).
+struct Identity {
+    text: String,
+    lock_code: Option<String>,
+}
+
+/// Where a recovery code comes from when the vault is locked: the
+/// `COURIERQR_RECOVERY_CODE` env var, else an interactive prompt on a TTY.
+fn unlock_code() -> Result<String> {
+    if let Ok(code) = std::env::var("COURIERQR_RECOVERY_CODE")
+        && !code.trim().is_empty()
+    {
+        return Ok(code);
+    }
+    if std::io::stdin().is_terminal() {
+        eprint!("Recovery code to unlock this computer's keys: ");
+        std::io::stderr().flush()?;
+        let mut code = String::new();
+        std::io::stdin().lock().read_line(&mut code)?;
+        return Ok(code);
+    }
+    bail!(
+        "the identity vault is locked. Set COURIERQR_RECOVERY_CODE, or run on a terminal to be prompted"
+    )
+}
+
+/// Read the identity file, transparently unlocking a vault. `None` if there
+/// is no identity yet.
+fn load_identity() -> Result<Option<Identity>> {
+    let bytes = match fs::read(identity_file()?) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if courierqr_core::vault::is_locked(&bytes) {
+        let code = unlock_code()?;
+        let plain = courierqr_core::vault::unlock(&bytes, &code)
+            .context("wrong recovery code, or the vault file is damaged")?;
+        Ok(Some(Identity {
+            text: String::from_utf8(plain).context("vault contents are not valid UTF-8")?,
+            lock_code: Some(code),
+        }))
+    } else {
+        Ok(Some(Identity {
+            text: String::from_utf8(bytes).context("identity file is not valid UTF-8")?,
+            lock_code: None,
+        }))
+    }
+}
+
+/// Write the identity file (0600), re-locking it if `lock_code` is set.
+fn save_identity(id: &Identity) -> Result<()> {
+    let path = identity_file()?;
+    fs::create_dir_all(path.parent().unwrap())?;
+    let bytes = match &id.lock_code {
+        Some(code) => courierqr_core::vault::lock(id.text.as_bytes(), code)?,
+        None => id.text.clone().into_bytes(),
+    };
+    let tmp = path.with_extension("tmp");
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(&tmp)
+        .and_then(|mut f| f.write_all(&bytes))
+        .with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
+}
+
 /// This computer's own secret identities (classic and post-quantum, one per
-/// line), if it has any.
+/// line), if it has any. Unlocks the vault if the keys are encrypted at rest.
 pub fn own_identity() -> Result<Option<String>> {
-    match fs::read_to_string(identity_file()?) {
-        Ok(text) => {
-            let keys: Vec<&str> = text
-                .lines()
-                .map(str::trim)
-                .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
-                .collect();
-            Ok((!keys.is_empty()).then(|| keys.join("\n")))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+    Ok(load_identity()?.map(|id| {
+        id.text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }))
+}
+
+/// Is the identity encrypted at rest?
+pub fn vault_is_locked() -> Result<bool> {
+    match fs::read(identity_file()?) {
+        Ok(b) => Ok(courierqr_core::vault::is_locked(&b)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Encrypt the identity at rest under a fresh recovery code, which is
+/// returned to be shown once. Creates the identity first if needed.
+pub fn vault_enable_with(code: &str) -> Result<()> {
+    own_public_key_quiet()?; // ensure an identity exists
+    let mut id = load_identity()?.context("no identity to lock")?;
+    id.lock_code = Some(code.to_owned());
+    save_identity(&id)
+}
+
+/// Remove at-rest encryption, leaving a plaintext (0600) identity file.
+pub fn vault_disable() -> Result<()> {
+    let mut id = load_identity()?.context("no identity found")?;
+    id.lock_code = None;
+    save_identity(&id)
 }
 
 /// Load this computer's identity, creating it (0600) on first use.
@@ -174,44 +269,39 @@ pub fn own_public_key() -> Result<String> {
 /// Like [`own_public_key`] without printing; also says whether it was just created.
 pub fn own_public_key_quiet() -> Result<(String, bool)> {
     let path = identity_file()?;
-    if let Some(secret) = own_identity()? {
-        if !secret.contains("AGE-SECRET-KEY-PQ-1") {
+    if let Some(mut id) = load_identity()? {
+        if !id.text.contains("AGE-SECRET-KEY-PQ-1") {
             // Created before post-quantum support: add a post-quantum
-            // identity next to the classic one (which keeps working).
-            let mut f = fs::OpenOptions::new().append(true).open(&path)?;
-            writeln!(
-                f,
-                "# post-quantum (ML-KEM-768 + X25519) identity, added later"
-            )?;
-            writeln!(
-                f,
-                "{}",
+            // identity next to the classic one (which keeps working). This
+            // goes through save_identity so a locked vault stays locked.
+            id.text = format!(
+                "{}\n# post-quantum (ML-KEM-768 + X25519) identity, added later\n{}\n",
+                id.text.trim_end(),
                 courierqr_core::generate_pq_identity().expose_secret()
-            )?;
+            );
+            save_identity(&id)?;
         }
-        let secret = own_identity()?.unwrap_or(secret);
+        let secret: String = id
+            .text
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("AGE-SECRET-KEY-"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let pk = courierqr_core::public_key_of(&secret)
             .with_context(|| format!("{} is corrupt", path.display()))?;
         return Ok((pk, false));
     }
     let keys = generate_device_keys();
-    fs::create_dir_all(path.parent().unwrap())?;
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts
-        .open(&path)
-        .with_context(|| format!("creating {}", path.display()))?;
-    writeln!(
-        f,
-        "# CourierQR identity for this computer. SECRET: never share this file."
-    )?;
-    writeln!(f, "# public keys: {}", keys.public)?;
-    writeln!(f, "{}", keys.secret.expose_secret())?;
+    let text = format!(
+        "# CourierQR identity for this computer. SECRET: never share this file.\n# public keys: {}\n{}\n",
+        keys.public,
+        keys.secret.expose_secret()
+    );
+    save_identity(&Identity {
+        text,
+        lock_code: None,
+    })?;
     Ok((keys.public, true))
 }
 
@@ -292,6 +382,51 @@ mod tests {
 
         assert!(add("bad name!", &k1, true).is_err());
         assert!(add("x", "age1typo", true).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn vault_locks_and_unlocks_the_identity() {
+        let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("cqr-vault-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // SAFETY: serialized by ENV_LOCK.
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &dir) };
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+
+        // Create the identity (plaintext), remember its keys.
+        let (pk, created) = own_public_key_quiet().unwrap();
+        assert!(created);
+        let keys = own_identity().unwrap().unwrap();
+        assert!(!vault_is_locked().unwrap());
+
+        // Lock it. The file becomes an age vault; keys are no longer readable.
+        let code = courierqr_core::recovery_code();
+        vault_enable_with(&code).unwrap();
+        assert!(vault_is_locked().unwrap());
+        let raw = fs::read(identity_file().unwrap()).unwrap();
+        assert!(
+            !raw.windows(14).any(|w| w == b"AGE-SECRET-KEY"),
+            "secret not in cleartext"
+        );
+
+        // With the code (via env), everything still works and is unchanged.
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &code) };
+        assert_eq!(own_identity().unwrap().unwrap(), keys);
+        assert_eq!(own_public_key_quiet().unwrap().0, pk);
+
+        // Wrong code fails cleanly.
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", "WRONG-CODE-HERE") };
+        assert!(own_identity().is_err());
+
+        // Unlock back to plaintext.
+        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &code) };
+        vault_disable().unwrap();
+        assert!(!vault_is_locked().unwrap());
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        assert_eq!(own_identity().unwrap().unwrap(), keys);
+
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
         let _ = fs::remove_dir_all(dir);
     }
 }
