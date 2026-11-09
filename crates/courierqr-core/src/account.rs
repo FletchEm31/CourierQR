@@ -12,8 +12,10 @@
 //! * **Recovery** — lose a device, install CourierQR on a new one, enter the
 //!   same account number and the same device id, and the identical keys come
 //!   back, so everyone you paired with still recognizes you.
-//! * **Per-device keys** — each device mixes in a small random device id, so
-//!   its key differs from your other devices and can be revoked on its own.
+//! * **Per-device keys** — each device mixes in a memorable label (e.g.
+//!   "desktop", "iphone"), so its key differs from your other devices and can
+//!   be revoked on its own. Restoring a lost device needs only the account
+//!   number and that label — nothing else to have backed up.
 //! * **Anonymous** — the number is random, tied to no name, email or phone.
 //!
 //! Derivation (all local, no network):
@@ -21,7 +23,7 @@
 //! device seed = HKDF-SHA256(
 //!     ikm  = account seed (20 bytes),
 //!     salt = "courierqr-account-v1",
-//!     info = "device" ‖ device_id (u32 BE),
+//!     info = "device" ‖ 0x00 ‖ label,
 //! ) → 64 bytes
 //!   classic X25519 identity ← device seed[0..32]
 //!   post-quantum X-Wing seed ← device seed[32..64]
@@ -90,13 +92,14 @@ impl Account {
         Ok(Account { seed })
     }
 
-    /// Derive this account's keys for the device identified by `device_id`
-    /// (a small random number the device picks at install, stored in the
-    /// clear). Deterministic: same account + id ⇒ same keys.
-    pub fn device_keys(&self, device_id: u32) -> DeviceKeys {
+    /// Derive this account's keys for the device called `label` (e.g.
+    /// "desktop", "iphone"). Deterministic: same account + label ⇒ same keys,
+    /// which is how a lost device is restored. The label is case-folded and
+    /// trimmed so "Desktop" and "desktop" match.
+    pub fn device_keys(&self, label: &str) -> DeviceKeys {
         let hk = Hkdf::<Sha256>::new(Some(b"courierqr-account-v1"), self.seed.as_ref());
-        let mut info = b"device".to_vec();
-        info.extend_from_slice(&device_id.to_be_bytes());
+        let mut info = b"device\0".to_vec();
+        info.extend_from_slice(label.trim().to_lowercase().as_bytes());
         let mut okm = Zeroizing::new([0u8; 64]);
         hk.expand(&info, okm.as_mut())
             .expect("64 is a valid HKDF length");
@@ -120,11 +123,56 @@ impl Account {
     }
 }
 
-/// A random device id to mix into account derivation (stored in the clear).
-pub fn new_device_id() -> u32 {
-    let mut b = [0u8; 4];
-    getrandom::getrandom(&mut b).expect("system randomness unavailable");
-    u32::from_be_bytes(b)
+/// A short local **account number**: 16 uppercase hex characters (64 bits),
+/// shown grouped as `XXXX-XXXX-XXXX-XXXX`. It is a *credential and handle*,
+/// not key material — used to unlock a device's keys at rest and (later) to
+/// bind a YubiKey. Key recovery is the separate strong [`Account`] seed.
+///
+/// 64 bits is ample here: unlocking is gated by scrypt in the vault, so
+/// guessing is infeasible, and nothing is *derived* from this number.
+pub struct AccountNumber([u8; 8]);
+
+impl AccountNumber {
+    /// A fresh random account number.
+    pub fn generate() -> Self {
+        let mut b = [0u8; 8];
+        getrandom::getrandom(&mut b).expect("system randomness unavailable");
+        AccountNumber(b)
+    }
+
+    /// Grouped for display/writing down: `A3F9-C2E1-8B7D-4056`.
+    pub fn formatted(&self) -> String {
+        let hex: String = self.0.iter().map(|b| format!("{b:02X}")).collect();
+        hex.as_bytes()
+            .chunks(4)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    /// The canonical passphrase form fed to the vault: 16 hex chars, no
+    /// separators, uppercase. Stable regardless of how the user typed it.
+    pub fn passphrase(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02X}")).collect()
+    }
+
+    /// Parse a typed account number: separators and case are ignored.
+    pub fn parse(s: &str) -> Result<AccountNumber> {
+        let hex: String = s.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        if hex.len() != 16 {
+            return Err(Error::BadKey(format!(
+                "account number is 16 hex characters, got {}",
+                hex.len()
+            )));
+        }
+        let mut b = [0u8; 8];
+        for (i, pair) in hex.as_bytes().chunks(2).enumerate() {
+            let s = std::str::from_utf8(pair).unwrap();
+            b[i] = u8::from_str_radix(s, 16)
+                .map_err(|_| Error::BadKey("account number must be hex (0-9, A-F)".into()))?;
+        }
+        Ok(AccountNumber(b))
+    }
 }
 
 // 20 bytes ⇄ 32 Crockford base32 chars (exact, no padding).
@@ -186,8 +234,8 @@ mod tests {
         let b = Account::parse(n.expose_secret()).unwrap();
         // Same number ⇒ same derived device key.
         assert_eq!(
-            a.device_keys(7).public,
-            b.device_keys(7).public,
+            a.device_keys("desktop").public,
+            b.device_keys("desktop").public,
             "recovery reproduces the same keys"
         );
         assert_ne!(
@@ -202,16 +250,16 @@ mod tests {
         let n = a.number();
         let messy = n.expose_secret().to_lowercase().replace('-', " ");
         assert_eq!(
-            Account::parse(&messy).unwrap().device_keys(1).public,
-            a.device_keys(1).public
+            Account::parse(&messy).unwrap().device_keys("iphone").public,
+            a.device_keys("iphone").public
         );
     }
 
     #[test]
     fn each_device_gets_a_distinct_key_that_still_decrypts() {
         let acct = Account::generate();
-        let d1 = acct.device_keys(1);
-        let d2 = acct.device_keys(2);
+        let d1 = acct.device_keys("desktop");
+        let d2 = acct.device_keys("iphone");
         assert_ne!(d1.public, d2.public, "per-device keys differ");
 
         // A message encrypted to device 1 opens with device 1's derived
@@ -242,6 +290,43 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn account_number_is_16_hex_grouped_by_four() {
+        let n = AccountNumber::generate();
+        let f = n.formatted();
+        assert_eq!(f.len(), 19); // 16 hex + 3 dashes
+        assert_eq!(f.chars().filter(|c| *c == '-').count(), 3);
+        assert!(
+            f.chars()
+                .all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_lowercase())
+        );
+        // Round-trips, and is forgiving about separators/case.
+        assert_eq!(
+            AccountNumber::parse(&f).unwrap().passphrase(),
+            n.passphrase()
+        );
+        assert_eq!(
+            AccountNumber::parse(&f.to_lowercase())
+                .unwrap()
+                .passphrase(),
+            n.passphrase()
+        );
+        assert_eq!(
+            AccountNumber::parse(&f.replace('-', " "))
+                .unwrap()
+                .passphrase(),
+            n.passphrase()
+        );
+        assert_ne!(AccountNumber::generate().passphrase(), n.passphrase());
+    }
+
+    #[test]
+    fn rejects_bad_account_numbers() {
+        assert!(AccountNumber::parse("A3F9").is_err()); // too short
+        assert!(AccountNumber::parse("GGGG-GGGG-GGGG-GGGG").is_err()); // G not hex
+        assert!(AccountNumber::parse(&"A".repeat(17)).is_err());
     }
 
     #[test]
