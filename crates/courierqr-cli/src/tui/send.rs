@@ -54,6 +54,8 @@ pub(crate) struct SendTab {
     pub(crate) live: Option<Broadcast>,
     /// Codes per second for the next send (↑/↓ also adjust it live).
     pub(crate) fps: u32,
+    /// Rows the live screen gains over the compose screen (smaller header).
+    pub(crate) extra_rows: u16,
     /// Protection for a paired device (space toggles).
     pub(crate) method: Method,
     /// QR version that fits the body area at the last draw.
@@ -71,6 +73,7 @@ impl SendTab {
             live: None,
             fps: 8,
             method: Method::PostQuantum,
+            extra_rows: 0,
             fit_version: 10,
         }
     }
@@ -282,7 +285,13 @@ pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
 pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     // Largest QR version whose code (plus quiet zone) fits the body:
     // one module per column, two per row (half blocks).
-    let room = (area.width.saturating_sub(2) as i32).min(area.height.saturating_sub(5) as i32 * 2);
+    let rows = area.height
+        + if app.send.live.is_some() {
+            0
+        } else {
+            app.send.extra_rows
+        };
+    let room = (area.width.saturating_sub(2) as i32).min(rows.saturating_sub(5) as i32 * 2);
     app.send.fit_version = (MIN_VERSION..=MAX_VERSION)
         .rev()
         .find(|v| 17 + 4 * *v as i32 + 8 <= room)

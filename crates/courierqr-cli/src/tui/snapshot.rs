@@ -20,7 +20,7 @@ use crate::render::{Grid, Layout as QrLayout};
 use courierqr_core::secrecy::ExposeSecret;
 use courierqr_core::{OpenKey, Receiver};
 
-const W: u16 = 150;
+const W: u16 = 160;
 const H: u16 = 46;
 
 fn render(app: &mut App) -> ratatui::buffer::Buffer {
@@ -188,11 +188,11 @@ fn every_screen_renders_and_works() {
     let mut app = new_app(&rec);
     assert_eq!(app.tab, super::Tab::Send, "opens on Send (tab 1)");
     key(&mut app, KeyCode::Char('2'));
-    // Shadow is the logo; narrow terminals fall back to the smaller marks.
+    // The big Courier QR mark is the logo; narrow terminals fall back to smaller marks.
     let buf = render(&mut app);
     assert!(
         text(&buf).contains(logo::LOGOS[0].lines[0].trim_end()),
-        "Shadow logo drawn"
+        "Courier QR logo drawn"
     );
     dump(&buf, "receive-idle");
     let narrow = text(&render_at(&mut app, 100, H));

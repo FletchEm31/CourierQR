@@ -1,5 +1,8 @@
-//! Logo options for the terminal header. Press `l` to cycle; the choice is
-//! remembered in the config directory.
+//! The terminal header's wordmark, plus smaller fallbacks for narrow windows.
+//!
+//! The big "QR" is the ANSI Shadow letterforms scaled 2× (from the shadowless
+//! ANSI Regular glyphs, re-shadowed with the box-drawing rule learned from the
+//! Shadow font itself), so its outline matches COURIER exactly.
 //!
 //! `accent_from` is the column where the "QR" part starts, drawn in the
 //! accent colour (the Finder mark is accent too).
@@ -13,6 +16,8 @@ pub struct Logo {
     pub accent_from: usize,
     /// Columns before this are drawn in the accent colour too (the Finder mark).
     pub accent_until: usize,
+    /// Rows drawn muted (a tagline), left of `accent_from`.
+    pub muted_rows: &'static [usize],
 }
 
 impl Logo {
@@ -28,7 +33,32 @@ impl Logo {
     }
 }
 
+/// The line under COURIER. Alternatives that fit (53 columns):
+/// "encrypted over light", "air-gapped · end-to-end encrypted",
+/// "your keys stay home · only light crosses",
+/// "no network · no accounts · no metadata".
 pub const LOGOS: &[Logo] = &[
+    Logo {
+        name: "Courier QR",
+        about: "Shadow COURIER with a double-height QR hanging below, and a tagline",
+        lines: &[
+            r#" ██████╗ ██████╗ ██╗   ██╗██████╗ ██╗███████╗██████╗     ████████████╗   ████████████╗"#,
+            r#"██╔════╝██╔═══██╗██║   ██║██╔══██╗██║██╔════╝██╔══██╗    ████████████║   ████████████║"#,
+            r#"██║     ██║   ██║██║   ██║██████╔╝██║█████╗  ██████╔╝  ████╔═══════████╗ ████╔═════████╗"#,
+            r#"██║     ██║   ██║██║   ██║██╔══██╗██║██╔══╝  ██╔══██╗  ████║       ████║ ████║     ████║"#,
+            r#"╚██████╗╚██████╔╝╚██████╔╝██║  ██║██║███████╗██║  ██║  ████║       ████║ ████████████╔═╝"#,
+            r#" ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝  ████║       ████║ ████████████║"#,
+            r#"                                                       ████║       ████║ ████╔═════████╗"#,
+            r#"───── post-quantum encrypted · carried by light ─────  ████║ ████╗ ████║ ████║     ████║"#,
+            r#"                                                       ╚═████████████╔═╝ ████║     ████║"#,
+            r#"                                                         ████████████║   ████║     ████║"#,
+            r#"                                                         ╚═════████══╝   ╚═══╝     ╚═══╝"#,
+            r#"                                                               ╚═══╝"#,
+        ],
+        accent_from: 55,
+        accent_until: 0,
+        muted_rows: &[7],
+    },
     Logo {
         name: "Shadow",
         about: "bold block letters with a drop shadow",
@@ -42,6 +72,7 @@ pub const LOGOS: &[Logo] = &[
         ],
         accent_from: 52,
         accent_until: 0,
+        muted_rows: &[],
     },
     Logo {
         name: "Finder",
@@ -54,16 +85,19 @@ pub const LOGOS: &[Logo] = &[
         ],
         accent_from: 27,
         accent_until: 7,
+        muted_rows: &[3],
     },
     Logo {
         name: "Minimal",
         about: "one quiet line, for small windows",
         lines: &[r#"▣ courier·qr  ─  files over light"#],
         accent_from: 9999,
+        muted_rows: &[],
         accent_until: 1,
     },
 ];
 
 /// Smallest logo that fits; used when the chosen one is too big.
-/// Shadow is the logo; Finder and Minimal only appear on narrow terminals.
-pub const COMPACT: usize = 2;
+/// The big Courier QR mark is the logo; Shadow, Finder and Minimal are
+/// fallbacks for narrower terminals.
+pub const COMPACT: usize = 3;

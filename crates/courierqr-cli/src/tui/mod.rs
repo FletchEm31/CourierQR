@@ -328,8 +328,17 @@ impl App {
         let area = f.area();
         f.render_widget(Block::default().style(Style::new().bg(BG)), area);
 
-        let logo = self.fitting_logo(area.width);
+        // While transmitting, the codes need every row: shrink the header.
+        let logo = if self.tab == Tab::Send && self.send.live.is_some() {
+            &logo::LOGOS[logo::COMPACT]
+        } else {
+            self.fitting_logo(area.width)
+        };
         let header_h = (logo.height().max(4) + 2) as u16;
+        // The Send tab sizes its codes for the live screen, which uses the
+        // compact header: tell it how many rows that frees up.
+        let compact_h = (logo::LOGOS[logo::COMPACT].height().max(4) + 2) as u16;
+        self.send.extra_rows = header_h.saturating_sub(compact_h);
         let [header, tabs, body, footer] = Layout::vertical([
             Constraint::Length(header_h),
             Constraint::Length(1),
@@ -352,7 +361,7 @@ impl App {
     }
 
     fn fitting_logo(&self, width: u16) -> &'static logo::Logo {
-        let room = width.saturating_sub(48) as usize;
+        let room = width.saturating_sub(64) as usize; // leave the status column room
         let chosen = &logo::LOGOS[0];
         if chosen.width() <= room {
             return chosen;
@@ -381,16 +390,21 @@ impl App {
 
         let top_pad = (inner.height as usize).saturating_sub(logo.height()) / 2;
         let mut lines: Vec<Line> = vec![Line::raw(""); top_pad];
-        for l in logo.lines {
+        for (row, l) in logo.lines.iter().enumerate() {
+            let muted = logo.muted_rows.contains(&row);
             let spans: Vec<Span> = l
                 .chars()
                 .enumerate()
                 .map(|(i, ch)| {
                     let accent = i >= logo.accent_from || i < logo.accent_until;
-                    Span::styled(
-                        ch.to_string(),
-                        Style::new().fg(if accent { ACCENT } else { TEXT }),
-                    )
+                    let fg = if accent {
+                        ACCENT
+                    } else if muted {
+                        MUTED
+                    } else {
+                        TEXT
+                    };
+                    Span::styled(ch.to_string(), Style::new().fg(fg))
                 })
                 .collect();
             lines.push(Line::from(spans));
