@@ -154,6 +154,15 @@ pub(crate) struct Unlock {
 /// This computer's public key + fingerprint, unlocking the vault if a code
 /// is already available (env var).
 fn load_own_key() -> Option<(String, String)> {
+    // Don't let the CLI's stdin prompt fire from inside the TUI (the terminal
+    // is already in raw mode): if the vault is locked and no code is in the
+    // environment, return None so the in-app unlock gate handles it instead.
+    let have_code = std::env::var("COURIERQR_RECOVERY_CODE")
+        .ok()
+        .is_some_and(|c| !c.trim().is_empty());
+    if pair::vault_is_locked().unwrap_or(false) && !have_code {
+        return None;
+    }
     pair::own_public_key_quiet()
         .ok()
         .and_then(|(pk, _)| courierqr_core::fingerprint(&pk).ok().map(|fp| (pk, fp)))
