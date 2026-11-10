@@ -86,6 +86,7 @@ fn open_camera(_: &str) -> Result<Box<dyn Source>> {
 }
 
 /// Runs on its own thread: capture → decode → feed the receiver.
+#[cfg(test)] // the app uses `work_with`; tests drive this directly
 pub(crate) fn work(spec: SourceSpec, tx: &mpsc::Sender<Msg>, stop: &AtomicBool) -> Result<()> {
     work_with(spec, tx, stop, None)
 }
