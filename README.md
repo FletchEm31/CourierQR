@@ -6,7 +6,7 @@ CourierQR is a Rust-based project for exchanging encrypted data through camera-t
 
 Think of it as a **cold wallet for messaging**: an offline device keeps its own messaging keys and decrypts messages locally, while an online gateway transports ciphertext.
 
-> Experimental software under active development. The QR-transfer core exists; the shared messaging network and unified account architecture are still being developed. No claim of an independent security audit is made.
+> Experimental software under active development. Built today: the QR-transfer core, accounts with recovery, the terminal UI, and the first stage of the public feed (each gateway's Receive tab plays it). Still in development: gateway-to-gateway sync over Tor, the phone's feed receiver, and public stream mirrors. No independent security audit has been done.
 
 ## Features
 
@@ -17,9 +17,60 @@ Think of it as a **cold wallet for messaging**: an offline device keeps its own 
 - Pair devices using public keys and fingerprint verification.
 - Strip supported metadata before encryption.
 - Support classic, passphrase-based, and hybrid post-quantum encryption paths.
-- Protect local secrets using encrypted vault primitives.
+- Keep this computer's keys encrypted at rest, unlocked with your account number.
+- Create an account, or restore one from a recovery seed, in a first-run setup screen.
+- Play a public feed of encrypted messages on the gateway's Receive tab for offline devices to scan.
 
 Metadata removal is format-dependent. It does not guarantee that message contents are anonymous or that every identifying detail has been removed.
+
+## Install
+
+You need a Rust toolchain ([rustup.rs](https://rustup.rs)). On Linux, the on-screen window needs X11 headers: `sudo apt install libx11-dev libxkbcommon-dev`.
+
+```sh
+git clone https://github.com/FletchEm31/CourierQR
+cd CourierQR
+cargo install --path crates/courierqr-cli
+```
+
+This installs `courierqr` into `~/.cargo/bin`. Run the same `cargo install` command with `--force` after a `git pull` to update. For a headless build (export/receive only, no window or camera): `cargo install --path crates/courierqr-cli --no-default-features`.
+
+The phone side is a web app in `web/` (installable PWA, built to WebAssembly); CI builds it and publishes it to GitHub Pages.
+
+## Quick start
+
+```sh
+courierqr                 # opens the terminal UI; first run offers account setup
+```
+
+On first run, choose **Create a new account**. Write down the **account number** (it unlocks CourierQR on this computer) and the **recovery seed** (the only way to rebuild your keys on a new device). Both are shown once. Setup writes nothing until you type the account number back.
+
+The terminal UI has three tabs:
+
+| Tab | What it does |
+|---|---|
+| `1` Send | Type or paste text, pick a paired device or a passphrase, and the terminal shows it as animated QR codes. |
+| `2` Receive | Plays the public feed. Press Enter to scan your phone with the webcam instead. |
+| `3` Devices | Pair devices and show this computer's key. |
+
+Common commands:
+
+```sh
+courierqr pair show                         # this computer's key, as a QR code for the phone
+courierqr pair add phone age1… age1pq1…     # pair a phone from its key set
+courierqr pair list
+courierqr send FILE --to phone              # show a file as QR codes in a window
+courierqr receive --camera                  # receive from the webcam
+courierqr feed publish FILE --to phone      # add an encrypted message to the public feed
+courierqr feed list
+courierqr restore SEED --device desktop     # set up a replacement computer from your seed
+courierqr vault status
+courierqr --help                            # everything else
+```
+
+Set `COURIERQR_ACCOUNT_NUMBER` to unlock without a prompt, for example in scripts.
+
+**Camera tip:** if the webcam runs at half its frame rate in dim light, the camera is lengthening exposures. On Linux, `v4l2-ctl -d /dev/video0 -c exposure_dynamic_framerate=0` (from `v4l-utils`) keeps the full frame rate. The setting resets on reboot.
 
 ## Operating modes
 
@@ -113,13 +164,17 @@ Recovery of keys does not automatically restore deleted messages or files.
 
 ## Shared public QR feed
 
-The proposed network combines users’ encrypted messages into a shared, publicly accessible QR broadcast.
+The network combines users’ encrypted messages into one shared, publicly viewable QR broadcast. Anyone can view, record, or relay it; only the holder of the right private key can open a given message. An offline device can scan any display carrying the feed, not only its owner’s desktop.
 
-Anyone could view, record, or relay the feed. Only holders of the appropriate private keys should be able to decrypt a particular message.
+**Built (stage 1):** each gateway keeps a local copy of the feed (encrypted envelopes, kept 72 hours, newest 512) and plays every message on its Receive tab whenever the camera is idle. Gateways store and pass on ciphertext only; they draw the QR codes locally and cannot open the messages. Add messages with `courierqr feed publish` or `courierqr feed import`.
 
-An offline device could scan any compatible display carrying the required feed—not only its owner’s desktop.
+**In development:**
+- Gateways sync over Tor: push new messages to peers, and catch up on missed ones at login.
+- A phone receiver that follows many messages on the feed at once and keeps only its own.
+- Any gateway can mirror the feed to public video streams (YouTube, Twitch, Kick), for example inside a lofi stream.
+- Abuse controls (proof-of-work or rate limits), size padding, and retention tuning.
 
-Recipient discovery, relay distribution, scheduling, retention, and abuse controls remain development work. Tor transport and Matrix-based replication are under consideration.
+See `DESIGN.md` for details.
 
 ## QR transfer and RaptorQ
 
@@ -139,10 +194,12 @@ Actual throughput depends on the display, camera, focus, lighting, QR settings, 
 
 Development priorities include:
 
-- Unified account and device-role setup.
+- Gateway-to-gateway feed sync over Tor.
+- A phone receiver for the public feed.
 - Hardware-backed vault access, including YubiKey integration.
-- Device enrollment, revocation, and recovery.
-- Shared-feed scheduling and recipient discovery.
+- Device enrollment and revocation.
+- Account setup and restore in the phone app.
+- Public stream mirrors of the feed.
 - Optional long-term encrypted archives.
 
 Blockchain-backed archival is exploratory and is not required for messaging. Archived messages would be stored separately rather than repeated forever in the active feed.
@@ -158,11 +215,12 @@ QR exchange is a data channel, not a guarantee that parsers, imported files, or 
 ## Repository structure
 
 ```text
-crates/courierqr-core/   Transfer and cryptographic core
-crates/courierqr-cli/    Command-line application
-crates/courierqr-wasm/   WebAssembly integration
-web/                    Web interface
-DESIGN.md               Design documentation
+crates/courierqr-core/   Transfer, cryptography, accounts, feed playlist
+crates/courierqr-cli/    Command-line app and terminal UI (gateway)
+crates/courierqr-wasm/   WebAssembly build of the core, for the phone web app
+web/                     Phone web app (PWA)
+.github/workflows/       CI: tests, builds the web app, publishes it to GitHub Pages
+DESIGN.md                Design documentation
 ```
 
 ## Contributing
