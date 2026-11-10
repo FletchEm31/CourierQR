@@ -219,15 +219,15 @@ with the computer's key, byte-identical.
 Everything above is the transfer layer, and it is built. This section is the messenger it
 is turning into. Parts marked **built** exist in the code; the rest is design.
 
-### Two messengers per user
+### Gateway + offline messenger
 
 Each user runs two endpoints with **separate keys**:
 
-- **Online messenger** — the desktop app (today's CLI + terminal UI). It is connected to the
-  network, sends and receives its own messages, and doubles as the **gateway** for the
-  user's offline device: it scans the offline device's screen and forwards ciphertext, and
-  shows incoming ciphertext as QR codes for the offline device to scan.
-- **Offline messenger** — a phone or any other device with a camera and screen, never
+- **Gateway**: the desktop terminal UI (today's CLI + TUI). It is connected to the
+  network, uploads and sends new messages to the stream, reads its own messages, and relays
+  for the user's offline device: it scans the offline device's screen and forwards the
+  ciphertext, and shows incoming ciphertext as QR codes for the offline device to scan.
+- **Offline messenger**: a phone or any other device with a camera and screen, never
   networked. It holds its own keys and plaintext. Its only link to the world is optical.
 
 Both encrypt locally before anything leaves the device. The gateway carries the offline
