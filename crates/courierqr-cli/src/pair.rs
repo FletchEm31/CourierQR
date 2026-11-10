@@ -179,7 +179,9 @@ fn unlock_code() -> Result<String> {
     if let Some(code) = unlock_from_env() {
         return Ok(unlock_passphrase(&code));
     }
-    if std::io::stdin().is_terminal() {
+    // Never prompt under `cargo test`: stdin is the developer's terminal, so a
+    // test that reads a locked vault would block forever waiting for input.
+    if !cfg!(test) && std::io::stdin().is_terminal() {
         eprint!("Account number to unlock this computer's keys: ");
         std::io::stderr().flush()?;
         let mut code = String::new();
