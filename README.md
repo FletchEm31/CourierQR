@@ -99,11 +99,9 @@ The desktop can transport the phone’s ciphertext without being authorized to d
 
 | Item | Purpose |
 |---|---|
-| Public account ID | Identifies the account; not a recovery secret |
-| Account password | Authenticates account access |
-| Device unlock credential | Unlocks a local vault |
-| Vault recovery code | Unlocks the matching vault or backup |
-| Master recovery seed | Recreates device keys covered by its derivation scheme |
+| Account number | 16 hex characters issued at sign-up; the login that unlocks the local vault. Not key material |
+| Master recovery seed | Shown once at sign-up; recreates device keys from the seed + device label |
+| Vault recovery code | Unlocks a standalone vault created without an account |
 
 Account-derived and independently generated device identities are separate options.
 

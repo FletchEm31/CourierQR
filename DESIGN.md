@@ -213,3 +213,93 @@ with the computer's key, byte-identical.
 - Real-phone tuning (iOS Safari focus behaviour, frame rates). The synthetic tests are a
   floor, not a promise.
 - Tune the scrypt cost against real phone browser timings.
+
+## Messaging network (proposed)
+
+Everything above is the transfer layer, and it is built. This section is the messenger it
+is turning into. Parts marked **built** exist in the code; the rest is design.
+
+### Two messengers per user
+
+Each user runs two endpoints with **separate keys**:
+
+- **Online messenger** — the desktop app (today's CLI + terminal UI). It is connected to the
+  network, sends and receives its own messages, and doubles as the **gateway** for the
+  user's offline device: it scans the offline device's screen and forwards ciphertext, and
+  shows incoming ciphertext as QR codes for the offline device to scan.
+- **Offline messenger** — a phone or any other device with a camera and screen, never
+  networked. It holds its own keys and plaintext. Its only link to the world is optical.
+
+Both encrypt locally before anything leaves the device. The gateway carries the offline
+device's ciphertext but has no key that opens it.
+
+### Accounts (built)
+
+- At sign-up a user gets a **16-hex account number** (`A3F9-C2E1-8B7D-4056`, 64 bits). It
+  is the login: it unlocks the local vault (scrypt-gated). It is not key material —
+  nothing is derived from it.
+- Behind it is a **recovery seed** (160 bits, shown once). Device keys are derived from the
+  seed + a device label (`desktop`, `iphone`) via HKDF-SHA256, so `courierqr restore` on a
+  new machine rebuilds the same keys and fingerprint and existing pairings keep working.
+  Each device's keys are distinct, so one can be revoked without touching the others.
+- No name, email or phone number is attached to an account.
+
+Open decision: if the account number is the login, it must not also be the address people
+share to message you (anyone who knows your address would know your login). The shareable
+address should be a device key set / fingerprint, or a separate public handle.
+
+Keep the recovery seed off the gateway: anyone holding it can rebuild the offline
+device's keys too.
+
+### Transport
+
+- **Closed group (built: `transport.rs`).** An age ciphertext wrapped in a small envelope
+  with a random 16-byte id (for de-duplication only). No sender or recipient in the clear:
+  every message goes to the whole group and each member tries its own key
+  (`NoMatchingKeys` = not mine). Intended carrier: a private, admin-controlled Matrix room
+  or relay — invite-only and revocable.
+- **Shared public feed (proposed).** Gateways display one public, animated QR broadcast
+  mixing everyone's ciphertext. Anyone can watch, record or rebroadcast it (a web page,
+  Twitch, YouTube); only key holders can open their messages. An offline device can scan
+  any display carrying the feed, and RaptorQ lets it join mid-broadcast. Relays could be
+  run by volunteers, by CourierQR, or both. Tor is under consideration for gateway–relay
+  traffic.
+- **Notifications (proposed).** An optional online device may get a generic "message
+  waiting" ping, holding no keys or plaintext.
+
+### The hard constraint: feed capacity
+
+One screen is a thin pipe. The measured default (2×2 grid of v15) carries about 1.7 KB per
+update; at 8 updates/s that is roughly **14 KB/s for the entire public feed**, shared by
+every user. A short post-quantum message is about 2 KB (the ML-KEM stanza alone is
+~1.46 KB), so one feed tops out around **5–7 messages per second worldwide**. The
+"everyone receives everything" property that hides recipients is the same property that
+stops it scaling. The "few seconds to receive a small message" target only holds while the
+feed is lightly used.
+
+Likely answer: **shard the feed into channels**, with each recipient's channel derived
+from their key, so a device scans only its own channel. That trades some anonymity (the
+anonymity set shrinks to one channel) for capacity; the channel count is the dial.
+
+**Recognizing your own messages.** age headers don't name the recipient, so an offline
+device must trial-decrypt every message it sees. That's cheap per message (one X25519 /
+X-Wing decapsulation) but grows with feed volume. A short per-recipient tag would let
+devices skip most messages, at the cost of some linkability; leaving it out is the
+private default.
+
+### Open questions
+
+- Retention: how long a message stays on the feed, and how relays decide to stop sending it.
+- Receipts: optional, sender-requested; an offline scan must never tell the network
+  anything by itself.
+- Timing and size leakage: padding to size buckets, and whether gateways should emit cover
+  traffic.
+- Gateway trust: a malicious gateway can't read messages but can drop, delay, or log them,
+  and its camera sees the offline device's screen.
+- Abuse: rate limits and spam control on an open feed with no identities.
+- Sender authentication (see the threat model): payload signing before this goes beyond
+  your own devices.
+
+Prior art to study: Tinfoil Chat (TFC), Bitmessage (everyone-gets-everything with trial
+decryption), Blockstream Satellite (one-way broadcast, anonymous reception), and private
+information retrieval research.
