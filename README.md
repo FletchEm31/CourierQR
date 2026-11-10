@@ -50,7 +50,7 @@ The terminal UI has three tabs:
 | Tab | What it does |
 |---|---|
 | `1` Send | Type or paste text, pick a paired device or a passphrase, and the terminal shows it as animated QR codes. |
-| `2` Receive | Plays the public feed. Press Enter to scan your phone with the webcam instead. |
+| `2` Receive | Plays the public feed. Press Enter to scan your phone with the webcam instead; `v` opens a full-resolution camera window. |
 | `3` Devices | Pair devices and show this computer's key. |
 
 Common commands:

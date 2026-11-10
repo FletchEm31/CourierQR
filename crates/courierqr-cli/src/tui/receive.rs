@@ -50,6 +50,9 @@ pub(crate) struct FrameInfo {
 
 pub(crate) enum Msg {
     Opened(Box<CameraInfo>),
+    /// The full-resolution preview window opened (true) or closed (false),
+    /// or couldn't open (Err).
+    Window(std::result::Result<bool, String>),
     Frame(Box<FrameInfo>),
     Complete(Box<Receiver>),
     Error(String),
@@ -60,12 +63,12 @@ struct Worker {
     rx: mpsc::Receiver<Msg>,
 }
 
-fn spawn(spec: SourceSpec) -> Worker {
+fn spawn(spec: SourceSpec, window: Arc<AtomicBool>) -> Worker {
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     thread::spawn(move || {
-        if let Err(e) = work(spec, &tx, &flag) {
+        if let Err(e) = work_with(spec, &tx, &flag, Some(&window)) {
             let _ = tx.send(Msg::Error(format!("{e:#}")));
         }
     });
@@ -84,6 +87,19 @@ fn open_camera(_: &str) -> Result<Box<dyn Source>> {
 
 /// Runs on its own thread: capture → decode → feed the receiver.
 pub(crate) fn work(spec: SourceSpec, tx: &mpsc::Sender<Msg>, stop: &AtomicBool) -> Result<()> {
+    work_with(spec, tx, stop, None)
+}
+
+/// [`work`], plus an optional full-resolution preview window that follows
+/// `window` (the `v` key): it opens and closes on this thread, which owns
+/// the frames, so the terminal UI never blocks on it.
+fn work_with(
+    spec: SourceSpec,
+    tx: &mpsc::Sender<Msg>,
+    stop: &AtomicBool,
+    window: Option<&AtomicBool>,
+) -> Result<()> {
+    let mut view: Option<crate::camera::Preview> = None;
     let paced = matches!(spec, SourceSpec::File(_));
     let mut src: Box<dyn Source> = match &spec {
         SourceSpec::File(p) => Box::new(Y4mSource::open(p)?),
@@ -139,6 +155,33 @@ pub(crate) fn work(spec: SourceSpec, tx: &mpsc::Sender<Msg>, stop: &AtomicBool) 
             }
         }
         let pr = rx.progress();
+        if let Some(flag) = window {
+            if flag.load(Ordering::Relaxed) {
+                if view.is_none() {
+                    match crate::camera::Preview::open_quiet() {
+                        Ok(mut v) => {
+                            v.title("camera (v in the terminal to close)");
+                            view = Some(v);
+                            let _ = tx.send(Msg::Window(Ok(true)));
+                        }
+                        Err(e) => {
+                            flag.store(false, Ordering::Relaxed);
+                            let _ = tx.send(Msg::Window(Err(e)));
+                        }
+                    }
+                }
+                let frac = pr.received as f32 / pr.needed.max(1) as f32;
+                let closed = view.as_mut().is_some_and(|v| !v.show(&f, new > 0, frac));
+                if closed {
+                    // Closed with the window's own button or Esc.
+                    view = None;
+                    flag.store(false, Ordering::Relaxed);
+                    let _ = tx.send(Msg::Window(Ok(false)));
+                }
+            } else if view.take().is_some() {
+                let _ = tx.send(Msg::Window(Ok(false)));
+            }
+        }
         let preview = (last_preview.elapsed() >= Duration::from_millis(50)).then(|| {
             last_preview = Instant::now();
             downscale(&f, 192)
@@ -237,6 +280,8 @@ pub(crate) struct ReceiveTab {
     pub(crate) decode_ms: f64,
     /// Public feed slideshow, shown whenever the camera is idle.
     pub(crate) feed: super::feed::FeedView,
+    /// Full-resolution camera window wanted (`v`); the worker follows it.
+    pub(crate) window: Arc<AtomicBool>,
 }
 
 impl ReceiveTab {
@@ -262,6 +307,7 @@ impl ReceiveTab {
             capture_fps: 0.0,
             decode_ms: 0.0,
             feed: super::feed::FeedView::new(),
+            window: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -315,13 +361,18 @@ impl ReceiveTab {
             return Err("no camera found. Plug one in, or check `courierqr cameras`".into());
         };
         let info = self.info.take();
+        // Fresh counters, but keep the feed's place and the window toggle.
+        let feed = std::mem::replace(&mut self.feed, super::feed::FeedView::new());
+        let window = self.window.clone();
         *self = ReceiveTab {
             sources: std::mem::take(&mut self.sources),
             current: self.current,
             info,
+            feed,
+            window,
             ..ReceiveTab::new(vec![])
         };
-        self.worker = Some(spawn(spec));
+        self.worker = Some(spawn(spec, self.window.clone()));
         self.phase = Phase::Scanning;
         self.started = Some(Instant::now());
         Ok(())
@@ -367,6 +418,13 @@ impl ReceiveTab {
                     events.push(Event::Message(e, true));
                     finished = true;
                 }
+                Msg::Window(Ok(true)) => {
+                    events.push(Event::Message("camera window open".into(), false))
+                }
+                Msg::Window(Ok(false)) => {
+                    events.push(Event::Message("camera window closed".into(), false))
+                }
+                Msg::Window(Err(e)) => events.push(Event::Message(e, true)),
             }
         }
         if finished {
@@ -519,14 +577,28 @@ pub(crate) fn on_key(app: &mut App, k: KeyEvent) {
             let m = app.receive.next_camera();
             app.toast(m, false);
         }
+        KeyCode::Char('v') => {
+            let on = !app.receive.window.load(Ordering::Relaxed);
+            app.receive.window.store(on, Ordering::Relaxed);
+            let msg = match (on, matches!(app.receive.phase, Phase::Scanning)) {
+                (true, true) => "opening the camera window…",
+                (true, false) => "camera window will open when the camera starts",
+                (false, _) => "camera window off",
+            };
+            app.toast(msg, false);
+        }
         _ => {}
     }
 }
 
 pub(crate) fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match app.receive.phase {
-        Phase::Idle | Phase::Failed(_) => vec![("enter", "start camera"), ("c", "switch camera")],
-        Phase::Scanning => vec![("enter", "stop")],
+        Phase::Idle | Phase::Failed(_) => vec![
+            ("enter", "start camera"),
+            ("c", "switch camera"),
+            ("v", "camera window"),
+        ],
+        Phase::Scanning => vec![("enter", "stop"), ("v", "camera window")],
         Phase::Unlock { .. } => vec![
             ("type", "passphrase"),
             ("enter", "unlock"),

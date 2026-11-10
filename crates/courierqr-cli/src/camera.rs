@@ -512,7 +512,7 @@ impl Rejections {
 // ---------------------------------------------------------------- preview window
 
 #[cfg(feature = "window")]
-struct Preview {
+pub(crate) struct Preview {
     win: minifb::Window,
     buf: Vec<u32>,
     w: usize,
@@ -524,8 +524,15 @@ impl Preview {
     const MAX_W: usize = 960;
 
     fn open() -> Option<Self> {
-        // Size fixed on the first frame; open lazily in `show`.
-        Some(Preview {
+        Self::open_quiet()
+            .map_err(|e| eprintln!("(no preview window: {e})"))
+            .ok()
+    }
+
+    /// Like `open`, but reports failure instead of printing (for the TUI,
+    /// where stderr would scribble over the screen).
+    pub(crate) fn open_quiet() -> Result<Self, String> {
+        Ok(Preview {
             win: Self::window(640, 360)?,
             buf: Vec::new(),
             w: 640,
@@ -533,7 +540,7 @@ impl Preview {
         })
     }
 
-    fn window(w: usize, h: usize) -> Option<minifb::Window> {
+    fn window(w: usize, h: usize) -> Result<minifb::Window, String> {
         let mut win = minifb::Window::new(
             "CourierQR: receiving",
             w,
@@ -544,19 +551,18 @@ impl Preview {
                 ..Default::default()
             },
         )
-        .map_err(|e| eprintln!("(no preview window: {e})"))
-        .ok()?;
+        .map_err(|e| format!("can't open a window (is a display available?): {e}"))?;
         win.set_target_fps(60);
-        Some(win)
+        Ok(win)
     }
 
-    fn title(&mut self, s: &str) {
+    pub(crate) fn title(&mut self, s: &str) {
         self.win.set_title(&format!("CourierQR: {s}"));
     }
 
     /// Draw the frame (mirrored, like a selfie view) with a progress bar and a
     /// green border flash on new pieces. Returns false if the user closed it.
-    fn show(&mut self, f: &Frame, hit: bool, progress: f32) -> bool {
+    pub(crate) fn show(&mut self, f: &Frame, hit: bool, progress: f32) -> bool {
         if !self.win.is_open() || self.win.is_key_down(minifb::Key::Escape) {
             return false;
         }
@@ -597,15 +603,18 @@ impl Preview {
 }
 
 #[cfg(not(feature = "window"))]
-struct Preview;
+pub(crate) struct Preview;
 
 #[cfg(not(feature = "window"))]
 impl Preview {
     fn open() -> Option<Self> {
         None
     }
-    fn title(&mut self, _: &str) {}
-    fn show(&mut self, _: &Frame, _: bool, _: f32) -> bool {
+    pub(crate) fn open_quiet() -> Result<Self, String> {
+        Err("this build has no window support".into())
+    }
+    pub(crate) fn title(&mut self, _: &str) {}
+    pub(crate) fn show(&mut self, _: &Frame, _: bool, _: f32) -> bool {
         true
     }
 }

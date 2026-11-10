@@ -133,6 +133,7 @@ fn drive(
             }
             Msg::Complete(r) => return Some(r),
             Msg::Error(e) => panic!("worker error: {e}"),
+            Msg::Window(_) => {}
         }
     }
     None
