@@ -375,6 +375,8 @@ impl App {
     /// Paste into a gate field, keeping only the characters it accepts
     /// (so a copied "A3F9-C2E1-…" or a trailing newline is fine).
     fn gate_paste(&mut self, text: &str) {
+        const PLAIN: &[char] = &[];
+        const LABEL: &[char] = &['-', '_', ' '];
         let Some(gate) = self.gate.as_mut() else {
             return;
         };
