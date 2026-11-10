@@ -26,6 +26,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragr
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::pair;
+use courierqr_core::secrecy::ExposeSecret;
 
 // ---------------------------------------------------------------- theme (matches the phone app)
 
@@ -139,16 +140,104 @@ pub(crate) struct App {
     tab_hits: Vec<(Rect, Tab)>,
     /// This computer's public key + fingerprint (created on first run).
     pub(crate) own_key: Option<(String, String)>,
-    pub(crate) unlock: Option<Unlock>,
+    pub(crate) gate: Option<Gate>,
     pub(crate) out: PathBuf,
 }
 
-/// Startup gate shown when the key vault is encrypted at rest and no code
-/// has been supplied yet (`courierqr vault on`).
-#[derive(Default)]
-pub(crate) struct Unlock {
-    input: String,
-    error: Option<String>,
+/// Full-screen gate in front of the tabs: first-run account setup, or the
+/// unlock prompt when the keys are encrypted at rest.
+pub(crate) enum Gate {
+    /// Keys are locked: type the account number (or a legacy recovery code).
+    Unlock {
+        input: String,
+        error: Option<String>,
+    },
+    /// First run: pick new account / restore / no account.
+    Welcome { selected: usize },
+    /// Name this device (goes into key derivation).
+    Label {
+        input: String,
+        restore: bool,
+        error: Option<String>,
+    },
+    /// Restore: type the recovery seed.
+    Seed {
+        label: String,
+        input: String,
+        error: Option<String>,
+    },
+    /// Show the secrets once; type the account number back to commit.
+    Confirm {
+        pending: pair::PendingSetup,
+        input: String,
+        error: Option<String>,
+    },
+}
+
+impl Gate {
+    fn unlock() -> Self {
+        Gate::Unlock {
+            input: String::new(),
+            error: None,
+        }
+    }
+}
+
+const WELCOME: [(&str, &str); 3] = [
+    (
+        "Create a new account",
+        "New account number + recovery seed; keys derived for this device.",
+    ),
+    (
+        "Restore from recovery seed",
+        "Replacement device: same keys, paired devices still recognize you.",
+    ),
+    (
+        "Continue without an account",
+        "Random keys for this computer only. Not recoverable if lost.",
+    ),
+];
+
+/// Group alphanumerics in fours with dashes, uppercased: `A3F9-C2E1-…`.
+fn group4(input: &str) -> String {
+    let chars: Vec<char> = input
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    chars
+        .chunks(4)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Same shape as [`group4`], but bullets.
+fn masked4(input: &str) -> String {
+    group4(input)
+        .chars()
+        .map(|c| if c == '-' { '-' } else { '•' })
+        .collect()
+}
+
+/// Edit a gate text field: alphanumerics (plus `allow`) append up to `max`,
+/// backspace deletes. Returns true if the key was consumed.
+fn edit_field(field: &mut String, k: &KeyEvent, max: usize, allow: &[char]) -> bool {
+    match k.code {
+        KeyCode::Backspace => {
+            field.pop();
+            true
+        }
+        KeyCode::Char(c)
+            if (c.is_ascii_alphanumeric() || allow.contains(&c)) && field.chars().count() < max =>
+        {
+            field.push(c);
+            true
+        }
+        // Separators the user types out of habit are ignored (we regroup).
+        KeyCode::Char('-' | ' ') => true,
+        _ => false,
+    }
 }
 
 /// This computer's public key + fingerprint, unlocking the vault if a code
@@ -157,10 +246,7 @@ fn load_own_key() -> Option<(String, String)> {
     // Don't let the CLI's stdin prompt fire from inside the TUI (the terminal
     // is already in raw mode): if the vault is locked and no code is in the
     // environment, return None so the in-app unlock gate handles it instead.
-    let have_code = std::env::var("COURIERQR_RECOVERY_CODE")
-        .ok()
-        .is_some_and(|c| !c.trim().is_empty());
-    if pair::vault_is_locked().unwrap_or(false) && !have_code {
+    if pair::vault_is_locked().unwrap_or(false) && pair::unlock_from_env().is_none() {
         return None;
     }
     pair::own_public_key_quiet()
@@ -170,10 +256,19 @@ fn load_own_key() -> Option<(String, String)> {
 
 impl App {
     pub(crate) fn new(opts: Opts) -> Self {
-        let locked = pair::vault_is_locked().unwrap_or(false);
-        let own_key = load_own_key();
-        // Locked, and we couldn't open it from the environment: prompt.
-        let unlock = (locked && own_key.is_none()).then(Unlock::default);
+        // First run (no identity yet): offer account setup rather than
+        // silently generating standalone keys. On an I/O error, fall back
+        // to the old behaviour.
+        let first_run = !pair::has_identity().unwrap_or(true);
+        let (own_key, gate) = if first_run {
+            (None, Some(Gate::Welcome { selected: 0 }))
+        } else {
+            let locked = pair::vault_is_locked().unwrap_or(false);
+            let own_key = load_own_key();
+            // Locked, and we couldn't open it from the environment: prompt.
+            let gate = (locked && own_key.is_none()).then(Gate::unlock);
+            (own_key, gate)
+        };
         let mut sources: Vec<(SourceSpec, String)> = Vec::new();
         if let Some(f) = &opts.camera_file {
             sources.push((
@@ -204,102 +299,416 @@ impl App {
             quit: false,
             tab_hits: Vec::new(),
             own_key,
-            unlock,
+            gate,
             out: opts.out,
         }
     }
 
-    /// Try the typed recovery code. On success the keys load for the rest of
-    /// the session; on failure the prompt stays up with an error.
-    fn try_unlock(&mut self, code: &str) {
-        // Thread the code to pair::own_identity (and later auto-unlocks) for
-        // this process only. Startup is single-threaded here; no worker yet.
-        unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", code.trim()) };
+    /// Try a typed account number (or legacy recovery code). On success the
+    /// keys load for the rest of the session; on failure, an error message.
+    fn try_unlock(&mut self, typed: &str) -> std::result::Result<(), String> {
+        // Thread the secret to pair::own_identity (and later auto-unlocks)
+        // for this process only. Startup is single-threaded; no worker yet.
+        unsafe { std::env::set_var(pair::UNLOCK_ENV[0], pair::unlock_passphrase(typed)) };
         match load_own_key() {
             Some(k) => {
                 self.own_key = Some(k);
-                self.unlock = None;
-                self.toast("keys unlocked", false);
+                Ok(())
             }
             None => {
-                unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
-                if let Some(u) = self.unlock.as_mut() {
-                    u.error = Some("Wrong recovery code — try again.".into());
-                    u.input.clear();
-                }
+                unsafe { std::env::remove_var(pair::UNLOCK_ENV[0]) };
+                Err("Wrong account number — try again.".into())
             }
         }
     }
 
-    fn unlock_key(&mut self, k: KeyEvent) {
+    fn gate_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        match k.code {
-            KeyCode::Esc => self.quit = true,
-            KeyCode::Char('c') if ctrl => self.quit = true,
-            KeyCode::Enter => {
-                let code = self
-                    .unlock
-                    .as_ref()
-                    .map(|u| u.input.clone())
-                    .unwrap_or_default();
-                if !code.trim().is_empty() {
-                    self.try_unlock(&code);
+        if ctrl && k.code == KeyCode::Char('c') {
+            self.quit = true;
+            return;
+        }
+        let Some(gate) = self.gate.take() else { return };
+        self.gate = self.step_gate(gate, k);
+    }
+
+    /// One key through the gate state machine; returns the next state
+    /// (`None` = gate done, show the tabs).
+    fn step_gate(&mut self, gate: Gate, k: KeyEvent) -> Option<Gate> {
+        match gate {
+            Gate::Unlock {
+                mut input,
+                mut error,
+            } => {
+                match k.code {
+                    KeyCode::Esc => self.quit = true,
+                    KeyCode::Enter if !input.trim().is_empty() => match self.try_unlock(&input) {
+                        Ok(()) => {
+                            self.toast("keys unlocked", false);
+                            return None;
+                        }
+                        Err(e) => {
+                            error = Some(e);
+                            input.clear();
+                        }
+                    },
+                    _ => {
+                        if edit_field(&mut input, &k, 25, &[]) {
+                            error = None;
+                        }
+                    }
                 }
+                Some(Gate::Unlock { input, error })
             }
-            KeyCode::Backspace => {
-                if let Some(u) = self.unlock.as_mut() {
-                    u.input.pop();
+            Gate::Welcome { mut selected } => {
+                match k.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.quit = true,
+                    KeyCode::Up | KeyCode::Char('k') => selected = selected.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        selected = (selected + 1).min(WELCOME.len() - 1)
+                    }
+                    KeyCode::Char(c @ '1'..='3') => selected = (c as u8 - b'1') as usize,
+                    KeyCode::Enter => {
+                        return match selected {
+                            0 | 1 => Some(Gate::Label {
+                                input: "desktop".into(),
+                                restore: selected == 1,
+                                error: None,
+                            }),
+                            _ => match pair::own_public_key_quiet() {
+                                Ok(_) => {
+                                    self.own_key = load_own_key();
+                                    self.toast(
+                                        "standalone keys created — run `courierqr vault on` to encrypt them",
+                                        false,
+                                    );
+                                    None
+                                }
+                                Err(e) => {
+                                    self.toast(format!("couldn't create keys: {e:#}"), true);
+                                    Some(Gate::Welcome { selected })
+                                }
+                            },
+                        };
+                    }
+                    _ => {}
                 }
+                Some(Gate::Welcome { selected })
             }
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(u) = self.unlock.as_mut() {
-                    u.input.push(c);
-                    u.error = None;
+            Gate::Label {
+                mut input,
+                restore,
+                mut error,
+            } => {
+                match k.code {
+                    KeyCode::Esc => {
+                        return Some(Gate::Welcome {
+                            selected: restore as usize,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        if restore {
+                            // Validate the label now so the error lands here.
+                            match pair::check_label(&input) {
+                                Ok(label) => {
+                                    return Some(Gate::Seed {
+                                        label,
+                                        input: String::new(),
+                                        error: None,
+                                    });
+                                }
+                                Err(e) => error = Some(format!("{e:#}")),
+                            }
+                        } else {
+                            match pair::PendingSetup::new(&input) {
+                                Ok(pending) => {
+                                    return Some(Gate::Confirm {
+                                        pending,
+                                        input: String::new(),
+                                        error: None,
+                                    });
+                                }
+                                Err(e) => error = Some(format!("{e:#}")),
+                            }
+                        }
+                    }
+                    _ => {
+                        if edit_field(&mut input, &k, 32, &['-', '_', ' ']) {
+                            error = None;
+                        }
+                    }
                 }
+                Some(Gate::Label {
+                    input,
+                    restore,
+                    error,
+                })
             }
-            _ => {}
+            Gate::Seed {
+                label,
+                mut input,
+                mut error,
+            } => {
+                match k.code {
+                    KeyCode::Esc => {
+                        return Some(Gate::Label {
+                            input: label,
+                            restore: true,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Enter => match pair::PendingSetup::restore(&input, &label) {
+                        Ok(pending) => {
+                            return Some(Gate::Confirm {
+                                pending,
+                                input: String::new(),
+                                error: None,
+                            });
+                        }
+                        Err(e) => error = Some(format!("{e:#}")),
+                    },
+                    _ => {
+                        if edit_field(&mut input, &k, 32, &[]) {
+                            error = None;
+                        }
+                    }
+                }
+                Some(Gate::Seed {
+                    label,
+                    input,
+                    error,
+                })
+            }
+            Gate::Confirm {
+                pending,
+                mut input,
+                mut error,
+            } => {
+                match k.code {
+                    KeyCode::Esc => {
+                        // Nothing has been written yet; going back discards
+                        // these secrets.
+                        let restore = pending.recovery_seed().is_none();
+                        return Some(Gate::Label {
+                            input: pending.label().to_owned(),
+                            restore,
+                            error: None,
+                        });
+                    }
+                    KeyCode::Enter => {
+                        if !pending.confirms(&input) {
+                            error = Some("That doesn't match. Check what you wrote down.".into());
+                            input.clear();
+                        } else {
+                            let pass = pending.passphrase();
+                            let label = pending.label().to_owned();
+                            match pending.commit(false) {
+                                Ok(()) => {
+                                    unsafe { std::env::set_var(pair::UNLOCK_ENV[0], &pass) };
+                                    self.own_key = load_own_key();
+                                    self.toast(
+                                        format!("account ready — device \"{label}\" unlocked"),
+                                        false,
+                                    );
+                                    return None;
+                                }
+                                Err(e) => {
+                                    self.toast(format!("setup failed: {e:#}"), true);
+                                    return Some(Gate::Welcome { selected: 0 });
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        if edit_field(&mut input, &k, 16, &[]) {
+                            error = None;
+                        }
+                    }
+                }
+                Some(Gate::Confirm {
+                    pending,
+                    input,
+                    error,
+                })
+            }
         }
     }
 
-    fn draw_unlock(&self, f: &mut Frame, area: Rect) {
-        let u = self.unlock.as_ref().unwrap();
+    fn draw_gate(&self, f: &mut Frame, area: Rect) {
+        let Some(gate) = self.gate.as_ref() else {
+            return;
+        };
+        let muted = |s: String| Line::from(Span::styled(s, Style::new().fg(MUTED)));
+        let text = |s: String| Line::from(Span::styled(s, Style::new().fg(TEXT)));
+        let field = |label: &str, value: String| {
+            Line::from(vec![
+                Span::styled(format!("  {label:<8}"), Style::new().fg(MUTED)),
+                Span::styled(value, Style::new().fg(ACCENT)),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ])
+        };
+        let err_lines = |e: &Option<String>| -> Vec<Line<'static>> {
+            e.as_ref()
+                .map(|e| {
+                    vec![
+                        Line::raw(""),
+                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))),
+                    ]
+                })
+                .unwrap_or_default()
+        };
+        let hint = |s: &str| {
+            vec![
+                Line::raw(""),
+                Line::from(Span::styled(s.to_owned(), Style::new().fg(MUTED))),
+            ]
+        };
+
+        let (title, width, mut lines): (&str, u16, Vec<Line>) = match gate {
+            Gate::Unlock { input, error } => {
+                let mut l = vec![
+                    text("This computer's keys are encrypted at rest.".into()),
+                    muted("Enter your account number to unlock them.".into()),
+                    Line::raw(""),
+                    field("account", masked4(input)),
+                ];
+                l.extend(err_lines(error));
+                l.extend(hint(
+                    "enter unlock · esc quit   (older vaults: your recovery code)",
+                ));
+                ("keys locked", 64, l)
+            }
+            Gate::Welcome { selected } => {
+                let mut l = vec![
+                    text("No keys on this computer yet. How do you want to start?".into()),
+                    Line::raw(""),
+                ];
+                for (i, (name, desc)) in WELCOME.iter().enumerate() {
+                    let on = i == *selected;
+                    l.push(Line::from(vec![
+                        Span::styled(if on { " ▸ " } else { "   " }, Style::new().fg(ACCENT)),
+                        Span::styled(
+                            format!("{}  {name}", i + 1),
+                            if on {
+                                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::new().fg(TEXT)
+                            },
+                        ),
+                    ]));
+                    l.push(muted(format!("      {desc}")));
+                }
+                l.extend(hint("↑↓ / 1-3 choose · enter continue · esc quit"));
+                ("welcome", 76, l)
+            }
+            Gate::Label {
+                input,
+                restore,
+                error,
+            } => {
+                let mut l = vec![
+                    text("Name this device.".into()),
+                    muted(if *restore {
+                        "Use the same name as the device you're restoring, or the keys won't match."
+                            .into()
+                    } else {
+                        "Each device gets its own keys from your seed + this name.".into()
+                    }),
+                    Line::raw(""),
+                    field("device", input.clone()),
+                ];
+                l.extend(err_lines(error));
+                l.extend(hint("enter continue · esc back"));
+                (if *restore { "restore" } else { "new account" }, 80, l)
+            }
+            Gate::Seed {
+                label,
+                input,
+                error,
+            } => {
+                let mut l = vec![
+                    text(format!("Restoring device \"{label}\".")),
+                    muted("Type your recovery seed (32 characters; dashes optional).".into()),
+                    Line::raw(""),
+                    field("seed", group4(input)),
+                ];
+                l.extend(err_lines(error));
+                l.extend(hint("enter continue · esc back"));
+                ("restore", 76, l)
+            }
+            Gate::Confirm {
+                pending,
+                input,
+                error,
+            } => {
+                let key = |s: &str| Span::styled(format!("  {s:<16}"), Style::new().fg(MUTED));
+                let val = |s: String| {
+                    Span::styled(s, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
+                };
+                let mut l = vec![
+                    Line::from(Span::styled(
+                        "Write these down now. They are shown once.",
+                        Style::new().fg(WARN).add_modifier(Modifier::BOLD),
+                    )),
+                    Line::raw(""),
+                    Line::from(vec![key("account number"), val(pending.account_number())]),
+                    muted("                    unlocks CourierQR on this computer".into()),
+                ];
+                if let Some(seed) = pending.recovery_seed() {
+                    l.push(Line::from(vec![
+                        key("recovery seed"),
+                        val(seed.expose_secret().to_string()),
+                    ]));
+                    l.push(muted(
+                        "                    the ONLY way to rebuild your keys on a new device"
+                            .into(),
+                    ));
+                    l.push(Line::raw(""));
+                    l.push(muted(
+                        "Keep them apart, and off this computer. Anyone with the seed has your keys."
+                            .into(),
+                    ));
+                } else {
+                    l.push(Line::raw(""));
+                    l.push(muted(format!(
+                        "Device \"{}\" will get the same keys as before. This account number is new.",
+                        pending.label()
+                    )));
+                }
+                l.push(Line::raw(""));
+                l.push(text(
+                    "Type the account number to confirm you wrote it down:".into(),
+                ));
+                l.push(field("account", group4(input)));
+                l.extend(err_lines(error));
+                l.extend(hint("enter finish · esc back (discards these)"));
+                ("save these", 84, l)
+            }
+        };
+        lines.insert(0, Line::raw(""));
+        let height = lines.len() as u16 + 2;
         let [_, mid, _] = Layout::vertical([
-            Constraint::Min(1),
-            Constraint::Length(9),
-            Constraint::Min(1),
+            Constraint::Min(0),
+            Constraint::Length(height),
+            Constraint::Min(0),
         ])
         .areas(area);
         let [_, center, _] = Layout::horizontal([
-            Constraint::Min(1),
-            Constraint::Length(56),
-            Constraint::Min(1),
+            Constraint::Min(0),
+            Constraint::Length(width.min(area.width)),
+            Constraint::Min(0),
         ])
         .areas(mid);
-        let block = panel("keys locked");
+        let block = panel(title);
         let inner = block.inner(center);
+        f.render_widget(Clear, center);
         f.render_widget(block, center);
-        let masked: String = "•".repeat(u.input.chars().count());
-        let mut lines = vec![
-            Line::from(Span::styled(
-                "This computer's keys are encrypted at rest.",
-                Style::new().fg(TEXT),
-            )),
-            Line::from(Span::styled(
-                "Enter your recovery code to unlock them.",
-                Style::new().fg(MUTED),
-            )),
-            Line::raw(""),
-            Line::from(vec![
-                Span::styled("  code  ", Style::new().fg(MUTED)),
-                Span::styled(masked, Style::new().fg(ACCENT)),
-                Span::styled("▏", Style::new().fg(ACCENT)),
-            ]),
-        ];
-        if let Some(e) = &u.error {
-            lines.push(Line::raw(""));
-            lines.push(Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))));
-        }
-        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        let pad = Rect {
+            x: inner.x + 1,
+            width: inner.width.saturating_sub(2),
+            ..inner
+        };
+        f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), pad);
     }
 
     pub(crate) fn toast(&mut self, msg: impl Into<String>, error: bool) {
@@ -375,9 +784,9 @@ impl App {
     }
 
     pub(crate) fn on_key(&mut self, k: KeyEvent) {
-        // The unlock gate swallows everything until the vault is open.
-        if self.unlock.is_some() {
-            return self.unlock_key(k);
+        // The setup/unlock gate swallows everything until it's done.
+        if self.gate.is_some() {
+            return self.gate_key(k);
         }
         // Command palette has focus when open.
         if let Some(p) = self.palette.as_mut() {
@@ -453,13 +862,13 @@ impl App {
         let area = f.area();
         f.render_widget(Block::default().style(Style::new().bg(BG)), area);
 
-        if self.unlock.is_some() {
+        if self.gate.is_some() {
             let logo = self.fitting_logo(area.width);
             let header_h = (logo.height().max(4) + 2) as u16;
             let [header, body] =
                 Layout::vertical([Constraint::Length(header_h), Constraint::Min(4)]).areas(area);
             self.draw_header(f, header, logo);
-            self.draw_unlock(f, body);
+            self.draw_gate(f, body);
             return;
         }
 

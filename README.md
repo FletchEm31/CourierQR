@@ -105,6 +105,8 @@ The desktop can transport the phone’s ciphertext without being authorized to d
 
 Account-derived and independently generated device identities are separate options.
 
+Running `courierqr` on a computer with no keys opens a first-run setup screen: create an account, restore from your recovery seed, or continue without an account. After that, the terminal UI unlocks with your account number. Set `COURIERQR_ACCOUNT_NUMBER` to skip the prompt in scripts.
+
 Anyone with sufficient master recovery material can recreate the corresponding device keys. Keep that material off gateways when maintaining offline-device isolation.
 
 Recovery of keys does not automatically restore deleted messages or files.

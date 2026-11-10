@@ -64,7 +64,7 @@ fn valid_name(name: &str) -> bool {
         && !name.starts_with("age1")
         && name
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '))
 }
 
 /// Validate a device name and key; returns the normalized key and its fingerprint.
@@ -150,23 +150,44 @@ struct Identity {
     lock_code: Option<String>,
 }
 
-/// Where a recovery code comes from when the vault is locked: the
-/// `COURIERQR_RECOVERY_CODE` env var, else an interactive prompt on a TTY.
+/// Environment variables that can carry the unlock secret, in priority
+/// order: the account number (current), then the legacy recovery code.
+pub const UNLOCK_ENV: [&str; 2] = ["COURIERQR_ACCOUNT_NUMBER", "COURIERQR_RECOVERY_CODE"];
+
+/// The unlock secret from the environment, if one is set.
+pub fn unlock_from_env() -> Option<String> {
+    UNLOCK_ENV
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .find(|c| !c.trim().is_empty())
+}
+
+/// What the vault is actually locked under for a typed secret. A 16-hex
+/// account number (any grouping/case) maps to its canonical passphrase; any
+/// other input (e.g. a legacy 25-char recovery code) is passed through for
+/// the vault's own normalization.
+pub fn unlock_passphrase(typed: &str) -> String {
+    match AccountNumber::parse(typed) {
+        Ok(n) => n.passphrase(),
+        Err(_) => typed.trim().to_owned(),
+    }
+}
+
+/// Where the unlock secret comes from when the vault is locked: the
+/// environment ([`UNLOCK_ENV`]), else an interactive prompt on a TTY.
 fn unlock_code() -> Result<String> {
-    if let Ok(code) = std::env::var("COURIERQR_RECOVERY_CODE")
-        && !code.trim().is_empty()
-    {
-        return Ok(code);
+    if let Some(code) = unlock_from_env() {
+        return Ok(unlock_passphrase(&code));
     }
     if std::io::stdin().is_terminal() {
-        eprint!("Recovery code to unlock this computer's keys: ");
+        eprint!("Account number to unlock this computer's keys: ");
         std::io::stderr().flush()?;
         let mut code = String::new();
         std::io::stdin().lock().read_line(&mut code)?;
-        return Ok(code);
+        return Ok(unlock_passphrase(&code));
     }
     bail!(
-        "the identity vault is locked. Set COURIERQR_RECOVERY_CODE, or run on a terminal to be prompted"
+        "the identity vault is locked. Set COURIERQR_ACCOUNT_NUMBER, or run on a terminal to be prompted"
     )
 }
 
@@ -181,7 +202,7 @@ fn load_identity() -> Result<Option<Identity>> {
     if courierqr_core::vault::is_locked(&bytes) {
         let code = unlock_code()?;
         let plain = courierqr_core::vault::unlock(&bytes, &code)
-            .context("wrong recovery code, or the vault file is damaged")?;
+            .context("wrong account number, or the vault file is damaged")?;
         Ok(Some(Identity {
             text: String::from_utf8(plain).context("vault contents are not valid UTF-8")?,
             lock_code: Some(code),
@@ -273,6 +294,101 @@ fn write_derived(label: &str, keys: &DeviceKeys, unlock: &str) -> Result<()> {
     })
 }
 
+/// Does this computer have an identity yet (locked or not)? `false` means
+/// first run: offer setup instead of silently generating keys.
+pub fn has_identity() -> Result<bool> {
+    Ok(identity_file()?.exists())
+}
+
+/// A setup or restore that has been prepared but not written. The TUI shows
+/// the secrets, has the user type the account number back, and only then
+/// calls [`PendingSetup::commit`], so nothing lands on disk until the user
+/// has confirmed they wrote the number down.
+pub struct PendingSetup {
+    label: String,
+    seed: Account,
+    number: AccountNumber,
+    /// `true` for a fresh account (the seed is new and must be shown);
+    /// `false` for a restore (the user already has it).
+    fresh: bool,
+}
+
+impl PendingSetup {
+    /// A brand-new account: fresh recovery seed + account number.
+    pub fn new(label: &str) -> Result<Self> {
+        Ok(PendingSetup {
+            label: check_label(label)?,
+            seed: Account::generate(),
+            number: AccountNumber::generate(),
+            fresh: true,
+        })
+    }
+
+    /// Restore from an existing recovery seed, with a fresh account number
+    /// for this device.
+    pub fn restore(seed: &str, label: &str) -> Result<Self> {
+        Ok(PendingSetup {
+            label: check_label(label)?,
+            seed: Account::parse(seed).map_err(|e| anyhow::anyhow!(e.to_string()))?,
+            number: AccountNumber::generate(),
+            fresh: false,
+        })
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// `XXXX-XXXX-XXXX-XXXX`, for showing once.
+    pub fn account_number(&self) -> String {
+        self.number.formatted()
+    }
+
+    /// The account number's canonical passphrase form (what the vault is
+    /// locked under), for unlocking right after commit.
+    pub fn passphrase(&self) -> String {
+        self.number.passphrase()
+    }
+
+    /// The recovery seed, but only for a fresh account; a restore never
+    /// re-displays a seed the user just typed.
+    pub fn recovery_seed(&self) -> Option<SecretString> {
+        self.fresh.then(|| self.seed.number())
+    }
+
+    /// Did the user type back the right account number?
+    pub fn confirms(&self, typed: &str) -> bool {
+        AccountNumber::parse(typed).is_ok_and(|n| n.passphrase() == self.number.passphrase())
+    }
+
+    /// Derive this device's keys and write them, locked under the account
+    /// number.
+    pub fn commit(self, force: bool) -> Result<()> {
+        if identity_file()?.exists() && !force {
+            bail!(
+                "an identity already exists here. Use --force to replace it (you'll re-pair devices)."
+            );
+        }
+        let keys = self.seed.device_keys(&self.label);
+        write_derived(&self.label, &keys, &self.number.passphrase())
+    }
+}
+
+/// Device labels go into key derivation, so keep them simple and stable.
+pub fn check_label(label: &str) -> Result<String> {
+    let l = label.trim().to_lowercase();
+    if l.is_empty() || l.len() > 32 {
+        bail!("device name should be 1-32 characters");
+    }
+    if !l
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ' '))
+    {
+        bail!("device name: letters, digits, spaces, - and _ only");
+    }
+    Ok(l)
+}
+
 /// First-time setup: make a recovery seed and an account number, derive this
 /// device's keys from the seed + `label`, and store them encrypted at rest
 /// under the account number. Returns (account number, recovery seed) to show
@@ -283,11 +399,13 @@ pub fn setup(label: &str, force: bool) -> Result<(String, SecretString)> {
             "an identity already exists here. Use --force to replace it (you'll re-pair devices)."
         );
     }
-    let seed = Account::generate();
-    let account = AccountNumber::generate();
-    let keys = seed.device_keys(label);
-    write_derived(label, &keys, &account.passphrase())?;
-    Ok((account.formatted(), seed.number()))
+    let p = PendingSetup::new(label)?;
+    let out = (
+        p.account_number(),
+        p.recovery_seed().expect("fresh account"),
+    );
+    p.commit(force)?;
+    Ok(out)
 }
 
 /// Set this device up from an existing recovery seed (e.g. a replacement
@@ -297,11 +415,10 @@ pub fn restore(seed: &str, label: &str, force: bool) -> Result<String> {
     if identity_file()?.exists() && !force {
         bail!("an identity already exists here. Use --force to replace it.");
     }
-    let seed = Account::parse(seed).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let account = AccountNumber::generate();
-    let keys = seed.device_keys(label);
-    write_derived(label, &keys, &account.passphrase())?;
-    Ok(account.formatted())
+    let p = PendingSetup::restore(seed, label)?;
+    let number = p.account_number();
+    p.commit(force)?;
+    Ok(number)
 }
 
 /// The device label stored in an account-derived identity, if any.
@@ -456,6 +573,7 @@ mod tests {
         // SAFETY: serialized by ENV_LOCK.
         unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &dir) };
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
 
         // Create the identity (plaintext), remember its keys.
         let (pk, created) = own_public_key_quiet().unwrap();
@@ -487,9 +605,11 @@ mod tests {
         vault_disable().unwrap();
         assert!(!vault_is_locked().unwrap());
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         assert_eq!(own_identity().unwrap().unwrap(), keys);
 
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -503,6 +623,7 @@ mod tests {
         // First device.
         unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &d1) };
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         let (account, seed) = setup("desktop", false).unwrap();
         assert_eq!(account.len(), 19); // XXXX-XXXX-XXXX-XXXX
         assert!(vault_is_locked().unwrap(), "keys encrypted at rest");
@@ -524,6 +645,7 @@ mod tests {
         // A replacement device restores from the seed + same label.
         unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &d2) };
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         let account2 = restore(seed.expose_secret(), "desktop", false).unwrap();
         unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &account2) };
         let pk2 = own_public_key_quiet().unwrap().0;
@@ -532,6 +654,7 @@ mod tests {
         // A different device label gives a different key.
         unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", base.join("c")) };
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         let acc3 = restore(seed.expose_secret(), "iphone", false).unwrap();
         unsafe { std::env::set_var("COURIERQR_RECOVERY_CODE", &acc3) };
         assert_ne!(
@@ -541,6 +664,42 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn pending_setup_writes_nothing_until_commit() {
+        let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("cqr-pending-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", &dir) };
+        unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+
+        assert!(!has_identity().unwrap());
+        assert!(PendingSetup::new("bad label!").is_err());
+        let p = PendingSetup::new("Desktop").unwrap();
+        assert_eq!(p.label(), "desktop");
+        assert!(p.recovery_seed().is_some(), "fresh account shows its seed");
+        assert!(!has_identity().unwrap(), "nothing written before commit");
+
+        let n = p.account_number();
+        assert!(p.confirms(&n.to_lowercase().replace('-', " ")));
+        assert!(!p.confirms("0000-0000-0000-0000"));
+        p.commit(false).unwrap();
+        assert!(has_identity().unwrap() && vault_is_locked().unwrap());
+
+        // Unlocks with the account number in any grouping, via the new var.
+        unsafe { std::env::set_var("COURIERQR_ACCOUNT_NUMBER", n.replace('-', "")) };
+        assert!(own_identity().unwrap().is_some());
+
+        // A restore never re-shows the seed.
+        let seed = Account::generate().number();
+        let r = PendingSetup::restore(seed.expose_secret(), "laptop").unwrap();
+        assert!(r.recovery_seed().is_none());
+
+        unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -461,6 +461,7 @@ fn locked_vault_shows_unlock_gate_then_opens() {
     // SAFETY: serialized by ENV_LOCK.
     unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", dir.join("cfg")) };
     unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
 
     // Create and lock this computer's identity.
     crate::pair::own_public_key_quiet().unwrap();
@@ -472,7 +473,10 @@ fn locked_vault_shows_unlock_gate_then_opens() {
         camera_file: None,
         out: dir.join("dl"),
     });
-    assert!(app.unlock.is_some(), "locked vault prompts for a code");
+    assert!(
+        matches!(app.gate, Some(super::Gate::Unlock { .. })),
+        "locked vault prompts for a code"
+    );
     assert!(app.own_key.is_none(), "keys stay closed until unlocked");
     let buf = render(&mut app);
     assert!(text(&buf).contains("keys locked") && text(&buf).contains("recovery code"));
@@ -481,15 +485,139 @@ fn locked_vault_shows_unlock_gate_then_opens() {
     // Wrong code: error, still locked.
     typ(&mut app, "WRONG-CODE-00000-00000-00000");
     key(&mut app, KeyCode::Enter);
-    assert!(app.unlock.is_some());
-    assert!(text(&render(&mut app)).contains("Wrong recovery code"));
+    assert!(app.gate.is_some());
+    assert!(text(&render(&mut app)).contains("Wrong account number"));
 
     // Right code: opens, keys load, gate gone.
     typ(&mut app, &code);
     key(&mut app, KeyCode::Enter);
-    assert!(app.unlock.is_none(), "correct code unlocks");
+    assert!(app.gate.is_none(), "legacy recovery code still unlocks");
     assert!(app.own_key.is_some(), "keys available after unlock");
 
     unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The account number and seed on the confirm screen.
+fn confirm_secrets(app: &App) -> (String, Option<String>) {
+    match &app.gate {
+        Some(super::Gate::Confirm { pending, .. }) => (
+            pending.account_number(),
+            pending
+                .recovery_seed()
+                .map(|s| s.expose_secret().to_string()),
+        ),
+        _ => panic!("expected the confirm screen"),
+    }
+}
+
+#[test]
+fn first_run_sets_up_an_account_then_unlocks_and_restores() {
+    let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let base = std::env::temp_dir().join(format!("cqr-tui-setup-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(base.join("dl")).unwrap();
+    // SAFETY: serialized by ENV_LOCK.
+    unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", base.join("a")) };
+    unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    let new_app = || {
+        App::new(Opts {
+            camera: None,
+            camera_file: None,
+            out: base.join("dl"),
+        })
+    };
+
+    // ---- first run: welcome, not silent key generation
+    let mut app = new_app();
+    assert!(matches!(app.gate, Some(super::Gate::Welcome { .. })));
+    assert!(app.own_key.is_none());
+    assert!(!crate::pair::has_identity().unwrap(), "no keys made yet");
+    let buf = render(&mut app);
+    assert!(text(&buf).contains("Create a new account"));
+    assert!(text(&buf).contains("Restore from recovery seed"));
+    dump(&buf, "setup-welcome");
+
+    // ---- new account → device name → confirm
+    key(&mut app, KeyCode::Enter);
+    assert!(text(&render(&mut app)).contains("Name this device"));
+    dump(&render(&mut app), "setup-label");
+    key(&mut app, KeyCode::Enter); // default "desktop"
+    let (number, seed) = confirm_secrets(&app);
+    let seed = seed.expect("new account shows its seed");
+    let buf = render(&mut app);
+    assert!(text(&buf).contains(&number) && text(&buf).contains(&seed));
+    dump(&buf, "setup-confirm");
+    assert!(
+        !crate::pair::has_identity().unwrap(),
+        "nothing written before confirm"
+    );
+
+    // Wrong confirmation: stays put.
+    typ(&mut app, "0000000000000000");
+    key(&mut app, KeyCode::Enter);
+    assert!(text(&render(&mut app)).contains("doesn't match"));
+    // Right one (typed lowercase, with dashes): keys written, locked, open.
+    typ(&mut app, &number.to_lowercase());
+    key(&mut app, KeyCode::Enter);
+    assert!(app.gate.is_none(), "setup finished");
+    let (pk1, _) = app.own_key.clone().expect("keys loaded after setup");
+    assert!(crate::pair::vault_is_locked().unwrap(), "encrypted at rest");
+
+    // ---- next launch: unlock with the account number
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    let mut app = new_app();
+    assert!(matches!(app.gate, Some(super::Gate::Unlock { .. })));
+    let buf = render(&mut app);
+    assert!(text(&buf).contains("account number"));
+    dump(&buf, "unlock-account");
+    typ(&mut app, "FFFF-FFFF-FFFF-FFFF");
+    key(&mut app, KeyCode::Enter);
+    assert!(text(&render(&mut app)).contains("Wrong account number"));
+    typ(&mut app, &number);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.gate.is_none());
+    assert_eq!(app.own_key.as_ref().unwrap().0, pk1);
+
+    // ---- replacement device: restore from the seed
+    unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", base.join("b")) };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    let mut app = new_app();
+    key(&mut app, KeyCode::Char('2'));
+    key(&mut app, KeyCode::Enter);
+    assert!(text(&render(&mut app)).contains("same name"));
+    key(&mut app, KeyCode::Enter); // "desktop", same as before
+    typ(&mut app, "not-a-seed");
+    key(&mut app, KeyCode::Enter);
+    assert!(matches!(
+        app.gate,
+        Some(super::Gate::Seed { error: Some(_), .. })
+    ));
+    for _ in 0..40 {
+        key(&mut app, KeyCode::Backspace);
+    }
+    typ(&mut app, &seed);
+    dump(&render(&mut app), "restore-seed");
+    key(&mut app, KeyCode::Enter);
+    let (number2, shown_seed) = confirm_secrets(&app);
+    assert!(shown_seed.is_none(), "restore doesn't re-show the seed");
+    assert_ne!(number2, number, "fresh account number per device");
+    typ(&mut app, &number2);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.gate.is_none());
+    assert_eq!(app.own_key.as_ref().unwrap().0, pk1, "same keys restored");
+
+    // ---- "continue without an account" keeps the old standalone path
+    unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", base.join("c")) };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    let mut app = new_app();
+    key(&mut app, KeyCode::Char('3'));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.gate.is_none() && app.own_key.is_some());
+    assert!(!crate::pair::vault_is_locked().unwrap());
+
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    let _ = std::fs::remove_dir_all(&base);
 }

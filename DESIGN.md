@@ -243,6 +243,12 @@ device's ciphertext but has no key that opens it.
   new machine rebuilds the same keys and fingerprint and existing pairings keep working.
   Each device's keys are distinct, so one can be revoked without touching the others.
 - No name, email or phone number is attached to an account.
+- **Gateway first run**: with no keys on the machine, the terminal UI opens a welcome
+  screen — create an account, restore from a recovery seed, or continue without an
+  account (standalone random keys). Setup shows the account number (and, for a new
+  account, the seed) once and writes nothing until the user types the account number
+  back. Later launches unlock with the account number (`COURIERQR_ACCOUNT_NUMBER` skips
+  the prompt; legacy `COURIERQR_RECOVERY_CODE` vaults still open).
 
 Open decision: if the account number is the login, it must not also be the address people
 share to message you (anyone who knows your address would know your login). The shareable

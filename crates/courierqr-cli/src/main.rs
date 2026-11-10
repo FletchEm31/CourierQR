@@ -337,7 +337,7 @@ fn setup(device: &str, force: bool) -> Result<()> {
     eprintln!("  • the recovery seed is the ONLY way to rebuild your keys on a new device");
     eprintln!("    (lose it and the keys are gone — it is shown once and cannot be recovered).");
     eprintln!("\nKeys are encrypted at rest under your account number. To unlock without a");
-    eprintln!("prompt, set COURIERQR_RECOVERY_CODE to the account number.");
+    eprintln!("prompt, set COURIERQR_ACCOUNT_NUMBER.");
     Ok(())
 }
 
@@ -384,7 +384,9 @@ fn vault(cmd: VaultCmd) -> Result<()> {
                 "You'll need it to use your keys after a reboot. It is shown ONCE and is the"
             );
             eprintln!("only way in — CourierQR cannot recover it for you. To unlock without the");
-            eprintln!("prompt (e.g. in scripts), set COURIERQR_RECOVERY_CODE.");
+            eprintln!(
+                "prompt (e.g. in scripts), set COURIERQR_RECOVERY_CODE (or COURIERQR_ACCOUNT_NUMBER)."
+            );
             Ok(())
         }
         VaultCmd::Off => {
