@@ -57,9 +57,10 @@ pub const THEMES: [Palette; 5] = [
         text: rgb(0xececec),
         dim: rgb(0xb4b8bf),
         field: rgb(0x111214),
-        t1: rgb(0x1f8f5f),
-        t2: rgb(0x3ddc97),
-        t_text: rgb(0x0d0f12),
+        // The mockup's "Mint" title bar: deep green into jade, white text.
+        t1: rgb(0x053a2a),
+        t2: rgb(0x127a55),
+        t_text: rgb(0xffffff),
         accent: rgb(0x3ddc97),
         logo_shadow: rgb(0x343c48),
         warn: rgb(0xffb84d),

@@ -1,0 +1,80 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Main.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Send tab",
+      "w": 1280,
+      "x": 0,
+      "y": 0
+    },
+    "Receive.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Receive tab · public feed",
+      "w": 1280,
+      "x": 1360,
+      "y": 0
+    },
+    "Messages.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Messages tab · saved on this device",
+      "w": 1280,
+      "x": 2720,
+      "y": 0
+    },
+    "Network.dc.html": {
+      "h": 900,
+      "is_interactive": true,
+      "title": "Network tab",
+      "w": 1280,
+      "x": 4080,
+      "y": 0
+    },
+    "Unlock.dc.html": {
+      "h": 900,
+      "title": "Unlock dialog",
+      "w": 1280,
+      "x": 5440,
+      "y": 0
+    },
+    "Popout.dc.html": {
+      "h": 900,
+      "title": "Feed pop-out window",
+      "w": 1280,
+      "x": 1360,
+      "y": 1020
+    }
+  },
+  "createdOnFiles": {
+    "at": "2026-11-10T06:04:18Z",
+    "v": 1
+  },
+  "designSystems": [],
+  "launch": {
+    "view": "canvas"
+  },
+  "notes": {
+    "t": {
+      "kind": "title1",
+      "maxW": 6720,
+      "text": "CourierQR · 32-bit retro terminal UI",
+      "w": 240,
+      "x": 0,
+      "y": -260
+    }
+  },
+  "order": [
+    "Main.dc.html",
+    "Receive.dc.html",
+    "Messages.dc.html",
+    "Network.dc.html",
+    "Unlock.dc.html",
+    "Popout.dc.html"
+  ],
+  "pages": [],
+  "title": "CourierQR retro Win32 UI"
+}

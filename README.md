@@ -68,7 +68,7 @@ courierqr vault status
 courierqr --help                            # everything else
 ```
 
-The window has a retro look with five colour themes (Midnight, Classic, Amber, Phosphor, Synthwave). Click **Theme** in the title bar to switch (the choice is remembered) and **Logo** to change the header size. Both are also in the `Ctrl+P` command palette.
+The window has a retro look with five colour themes (Midnight, Classic, Amber, Phosphor, Synthwave). Click **Theme** in the title bar to switch (the choice is remembered) and **Logo** to change the header size. Both are also in the `Ctrl+P` command palette. The design it's being rebuilt toward is in [docs/design](docs/design/README.md).
 
 Paste works in every text field: right-click → Paste, Ctrl+Shift+V, or Ctrl+V (Ctrl+V reads the clipboard through `wl-paste`, `xclip` or `xsel`, whichever is installed). Set `COURIERQR_ACCOUNT_NUMBER` to unlock without a prompt, for example in scripts.
 
