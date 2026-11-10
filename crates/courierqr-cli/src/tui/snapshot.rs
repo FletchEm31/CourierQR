@@ -489,8 +489,9 @@ fn locked_vault_shows_unlock_gate_then_opens() {
     assert!(app.gate.is_some());
     assert!(text(&render(&mut app)).contains("Wrong account number"));
 
-    // Right code: opens, keys load, gate gone.
-    typ(&mut app, &code);
+    // Right code, pasted (right-click / Ctrl+Shift+V arrive as one paste,
+    // here with a trailing newline): opens, keys load, gate gone.
+    app.paste(&format!("{code}\n"));
     key(&mut app, KeyCode::Enter);
     assert!(app.gate.is_none(), "legacy recovery code still unlocks");
     assert!(app.own_key.is_some(), "keys available after unlock");
@@ -577,7 +578,7 @@ fn first_run_sets_up_an_account_then_unlocks_and_restores() {
     typ(&mut app, "FFFF-FFFF-FFFF-FFFF");
     key(&mut app, KeyCode::Enter);
     assert!(text(&render(&mut app)).contains("Wrong account number"));
-    typ(&mut app, &number);
+    app.paste(&number); // pasted account number, dashes and all
     key(&mut app, KeyCode::Enter);
     assert!(app.gate.is_none());
     assert_eq!(app.own_key.as_ref().unwrap().0, pk1);

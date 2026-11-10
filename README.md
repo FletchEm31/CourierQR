@@ -68,7 +68,7 @@ courierqr vault status
 courierqr --help                            # everything else
 ```
 
-Set `COURIERQR_ACCOUNT_NUMBER` to unlock without a prompt, for example in scripts.
+Paste works in every text field: right-click → Paste, Ctrl+Shift+V, or Ctrl+V (Ctrl+V reads the clipboard through `wl-paste`, `xclip` or `xsel`, whichever is installed). Set `COURIERQR_ACCOUNT_NUMBER` to unlock without a prompt, for example in scripts.
 
 **Camera tip:** if the webcam runs at half its frame rate in dim light, the camera is lengthening exposures. On Linux, `v4l2-ctl -d /dev/video0 -c exposure_dynamic_framerate=0` (from `v4l-utils`) keeps the full frame rate. The setting resets on reboot.
 

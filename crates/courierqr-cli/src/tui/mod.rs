@@ -199,6 +199,27 @@ const WELCOME: [(&str, &str); 3] = [
     ),
 ];
 
+/// The system clipboard's text, via whichever helper is installed
+/// (Wayland `wl-paste`, then X11 `xclip` / `xsel`). `None` if none works.
+fn clipboard_text() -> Option<String> {
+    use std::process::{Command, Stdio};
+    const HELPERS: [&[&str]; 3] = [
+        &["wl-paste", "--no-newline"],
+        &["xclip", "-selection", "clipboard", "-o"],
+        &["xsel", "--clipboard", "--output"],
+    ];
+    HELPERS.iter().find_map(|cmd| {
+        let out = Command::new(cmd[0])
+            .args(&cmd[1..])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        (out.status.success() && !text.is_empty()).then_some(text)
+    })
+}
+
 /// Group alphanumerics in fours with dashes, uppercased: `A3F9-C2E1-…`.
 fn group4(input: &str) -> String {
     let chars: Vec<char> = input
@@ -323,10 +344,77 @@ impl App {
         }
     }
 
+    /// Pasted text goes to whichever text field is active.
+    pub(crate) fn paste(&mut self, text: &str) {
+        if self.gate.is_some() {
+            self.gate_paste(text);
+        } else if self.tab == Tab::Send {
+            send::on_paste(self, text);
+        } else if self.tab == Tab::Devices && self.devices.wants_text() {
+            for c in text.chars().filter(|c| !c.is_control()) {
+                devices::on_key(self, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            }
+        }
+    }
+
+    /// Ctrl+V. Most Linux terminals don't paste on Ctrl+V themselves (they
+    /// pass the key through), so read the clipboard directly.
+    fn paste_clipboard(&mut self) {
+        match clipboard_text() {
+            Some(t) => self.paste(&t),
+            None => self.toast(
+                "couldn't read the clipboard: use Ctrl+Shift+V or right-click → Paste \
+                 (or install wl-clipboard / xclip)",
+                true,
+            ),
+        }
+    }
+
+    /// Paste into a gate field, keeping only the characters it accepts
+    /// (so a copied "A3F9-C2E1-…" or a trailing newline is fine).
+    fn gate_paste(&mut self, text: &str) {
+        let Some(gate) = self.gate.as_mut() else {
+            return;
+        };
+        let (field, max, allow): (&mut String, usize, &[char]) = match gate {
+            Gate::Unlock { input, error } => {
+                *error = None;
+                (input, 25, PLAIN)
+            }
+            Gate::Label { input, error, .. } => {
+                *error = None;
+                (input, 32, LABEL)
+            }
+            Gate::Seed { input, error, .. } => {
+                *error = None;
+                (input, 32, PLAIN)
+            }
+            Gate::Confirm { input, error, .. } => {
+                *error = None;
+                (input, 16, PLAIN)
+            }
+            Gate::Welcome { .. } => return,
+        };
+        for c in text
+            .trim()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || allow.contains(c))
+        {
+            if field.chars().count() >= max {
+                break;
+            }
+            field.push(c);
+        }
+    }
+
     fn gate_key(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             self.quit = true;
+            return;
+        }
+        if ctrl && k.code == KeyCode::Char('v') {
+            self.paste_clipboard();
             return;
         }
         let Some(gate) = self.gate.take() else { return };
@@ -723,7 +811,9 @@ impl App {
             if event::poll(Duration::from_millis(33))? {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => self.on_key(k),
-                    Event::Paste(text) if self.tab == Tab::Send => send::on_paste(self, &text),
+                    // Right-click → Paste, Ctrl+Shift+V, middle-click: the
+                    // terminal sends the text as one bracketed paste.
+                    Event::Paste(text) => self.paste(&text),
                     Event::Mouse(m) => {
                         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
                             let hit = self.tab_hits.iter().find(|(r, _)| {
@@ -789,6 +879,10 @@ impl App {
         // The setup/unlock gate swallows everything until it's done.
         if self.gate.is_some() {
             return self.gate_key(k);
+        }
+        if k.code == KeyCode::Char('v') && k.modifiers.contains(KeyModifiers::CONTROL) {
+            self.paste_clipboard();
+            return;
         }
         // Command palette has focus when open.
         if let Some(p) = self.palette.as_mut() {
