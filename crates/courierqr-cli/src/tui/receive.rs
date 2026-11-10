@@ -934,10 +934,21 @@ fn draw_preview(f: &mut Frame, area: Rect, p: &Preview) {
     let ox = area.x + (area.width - dw) / 2;
     let oy = area.y + (area.height - dh.div_ceil(2)) / 2;
     let buf = f.buffer_mut();
+    // Average every source pixel that falls under an output pixel (box
+    // filter) instead of picking one: far less jagged and noisy when the
+    // panel is smaller than the preview.
     let sample = |x: u16, y: u16| -> u8 {
-        let sx = ((x as f64 / s) as usize).min(p.w - 1);
-        let sy = ((y as f64 / s) as usize).min(p.h - 1);
-        p.px[sy * p.w + sx]
+        let x0 = ((x as f64 / s) as usize).min(p.w - 1);
+        let y0 = ((y as f64 / s) as usize).min(p.h - 1);
+        let x1 = (((x + 1) as f64 / s) as usize).clamp(x0 + 1, p.w);
+        let y1 = (((y + 1) as f64 / s) as usize).clamp(y0 + 1, p.h);
+        let mut sum = 0u32;
+        for sy in y0..y1 {
+            for sx in x0..x1 {
+                sum += p.px[sy * p.w + sx] as u32;
+            }
+        }
+        (sum / ((x1 - x0) * (y1 - y0)) as u32) as u8
     };
     for cy in 0..dh.div_ceil(2) {
         for cx in 0..dw {
