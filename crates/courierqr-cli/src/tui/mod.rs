@@ -5,6 +5,7 @@
 //! footer and a `^p` command palette; mouse clicks work on tabs.
 
 mod devices;
+mod feed;
 mod logo;
 mod receive;
 mod send;
@@ -749,6 +750,7 @@ impl App {
             self.toast(m, err);
         }
         self.send.tick();
+        self.receive.feed.tick();
         if let Some(rx) = self.receive.take_completed() {
             receive::unlock_with_own_key(self, rx);
         }
@@ -873,7 +875,9 @@ impl App {
         }
 
         // While transmitting, the codes need every row: shrink the header.
-        let logo = if self.tab == Tab::Send && self.send.live.is_some() {
+        let logo = if (self.tab == Tab::Send && self.send.live.is_some())
+            || (self.tab == Tab::Receive && self.receive.showing_feed())
+        {
             &logo::LOGOS[logo::COMPACT]
         } else {
             self.fitting_logo(area.width)

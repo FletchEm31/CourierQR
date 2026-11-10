@@ -68,12 +68,23 @@ impl Transmission {
         }
         let plaintext = payload::pack(name, data)?;
         let ciphertext = crypto::seal(key, &plaintext)?;
+        Self::from_ciphertext(&ciphertext, config)
+    }
+
+    /// Fountain-encode ciphertext that already exists — e.g. a message
+    /// relayed from the public feed ([`crate::Envelope::ciphertext`]). The
+    /// bytes are shown as-is; nothing is decrypted or re-encrypted, so a
+    /// gateway can display messages it has no key for.
+    pub fn from_ciphertext(ciphertext: &[u8], config: FrameConfig) -> Result<Self> {
+        if config.max_frame_bytes < MIN_FRAME_BYTES {
+            return Err(Error::FrameBudgetTooSmall(config.max_frame_bytes));
+        }
         if ciphertext.len() > MAX_TRANSFER_BYTES {
             return Err(Error::TooLarge(ciphertext.len()));
         }
 
         let symbol_budget = (config.max_frame_bytes - OVERHEAD_BYTES).min(u16::MAX as usize) as u16;
-        let encoder = Encoder::with_defaults(&ciphertext, symbol_budget);
+        let encoder = Encoder::with_defaults(ciphertext, symbol_budget);
         let oti = encoder.get_config();
 
         Ok(Transmission {

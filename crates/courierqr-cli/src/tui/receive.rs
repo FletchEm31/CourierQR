@@ -235,6 +235,8 @@ pub(crate) struct ReceiveTab {
     pub(crate) info: Option<CameraInfo>,
     pub(crate) capture_fps: f64,
     pub(crate) decode_ms: f64,
+    /// Public feed slideshow, shown whenever the camera is idle.
+    pub(crate) feed: super::feed::FeedView,
 }
 
 impl ReceiveTab {
@@ -259,7 +261,13 @@ impl ReceiveTab {
             info: None,
             capture_fps: 0.0,
             decode_ms: 0.0,
+            feed: super::feed::FeedView::new(),
         }
+    }
+
+    /// Camera idle and messages on the feed: the panel plays the feed.
+    pub(crate) fn showing_feed(&self) -> bool {
+        matches!(self.phase, Phase::Idle) && self.feed.len() > 0
     }
 
     pub(crate) fn wants_text(&self) -> bool {
@@ -534,58 +542,77 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     let r = &app.receive;
     let [left, right] =
         Layout::horizontal([Constraint::Min(40), Constraint::Length(48)]).areas(area);
-    let [left, details] = Layout::vertical([Constraint::Min(6), Constraint::Length(6)]).areas(left);
-    draw_camera_details(app, f, details);
+    // Idle camera + messages on the feed: the panel plays the public feed,
+    // and gets the whole column (camera details hide until you scan).
+    let show_feed = r.showing_feed();
+    let [left, details] = Layout::vertical([
+        Constraint::Min(6),
+        Constraint::Length(if show_feed { 0 } else { 6 }),
+    ])
+    .areas(left);
+    if !show_feed {
+        draw_camera_details(app, f, details);
+    }
 
     // Camera view
     let flash = Instant::now() < r.flash_until;
     let title = match r.phase {
         Phase::Scanning => "camera · live",
+        _ if show_feed => "public feed",
         _ => "camera",
     };
     let block = panel(title).border_style(Style::new().fg(if flash { ACCENT } else { LINE }));
     let inner = block.inner(left);
     f.render_widget(block, left);
-    match (&r.preview, &r.phase) {
-        (Some(p), Phase::Scanning) => draw_preview(f, inner, p),
-        _ => {
-            let msg: Vec<Line> = match &r.phase {
-                Phase::Idle => vec![
-                    Line::from(Span::styled(
-                        "Press Enter to start the camera",
-                        Style::new().fg(TEXT),
-                    )),
-                    Line::raw(""),
-                    Line::from(Span::styled(
-                        "On the phone: Send → choose a file or type text → Start sending,",
+    if show_feed {
+        super::feed::draw(&r.feed, f, inner);
+    } else {
+        match (&r.preview, &r.phase) {
+            (Some(p), Phase::Scanning) => draw_preview(f, inner, p),
+            _ => {
+                let msg: Vec<Line> = match &r.phase {
+                    Phase::Idle => vec![
+                        Line::from(Span::styled(
+                            "Press Enter to start the camera",
+                            Style::new().fg(TEXT),
+                        )),
+                        Line::raw(""),
+                        Line::from(Span::styled(
+                            "On the phone: Send → choose a file or type text → Start sending,",
+                            Style::new().fg(MUTED),
+                        )),
+                        Line::from(Span::styled(
+                            "then hold the screen 20–30 cm from the webcam.",
+                            Style::new().fg(MUTED),
+                        )),
+                        Line::raw(""),
+                        Line::from(Span::styled(
+                            "Public feed: no messages yet. It plays here once there are some.",
+                            Style::new().fg(MUTED),
+                        )),
+                    ],
+                    Phase::Scanning => vec![Line::from(Span::styled(
+                        "opening camera…",
                         Style::new().fg(MUTED),
-                    )),
-                    Line::from(Span::styled(
-                        "then hold the screen 20–30 cm from the webcam.",
-                        Style::new().fg(MUTED),
-                    )),
-                ],
-                Phase::Scanning => vec![Line::from(Span::styled(
-                    "opening camera…",
-                    Style::new().fg(MUTED),
-                ))],
-                Phase::Failed(e) => vec![
-                    Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))),
-                    Line::raw(""),
-                    Line::from(Span::styled("Enter to try again", Style::new().fg(MUTED))),
-                ],
-                Phase::Unlock { .. } => vec![Line::from(Span::styled(
-                    "received everything ✓",
-                    Style::new().fg(ACCENT),
-                ))],
-                Phase::Done { .. } => {
-                    vec![Line::from(Span::styled("done ✓", Style::new().fg(ACCENT)))]
-                }
-            };
-            let pad = (inner.height as usize).saturating_sub(msg.len()) / 2;
-            let mut lines = vec![Line::raw(""); pad];
-            lines.extend(msg);
-            f.render_widget(Paragraph::new(lines).centered(), inner);
+                    ))],
+                    Phase::Failed(e) => vec![
+                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))),
+                        Line::raw(""),
+                        Line::from(Span::styled("Enter to try again", Style::new().fg(MUTED))),
+                    ],
+                    Phase::Unlock { .. } => vec![Line::from(Span::styled(
+                        "received everything ✓",
+                        Style::new().fg(ACCENT),
+                    ))],
+                    Phase::Done { .. } => {
+                        vec![Line::from(Span::styled("done ✓", Style::new().fg(ACCENT)))]
+                    }
+                };
+                let pad = (inner.height as usize).saturating_sub(msg.len()) / 2;
+                let mut lines = vec![Line::raw(""); pad];
+                lines.extend(msg);
+                f.render_widget(Paragraph::new(lines).centered(), inner);
+            }
         }
     }
 

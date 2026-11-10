@@ -2,6 +2,7 @@
 
 mod camera;
 mod decode;
+mod feed;
 mod pair;
 mod render;
 mod tui;
@@ -141,6 +142,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VaultCmd,
     },
+    /// The public feed this gateway shows on its Receive tab (and will
+    /// relay to other gateways): encrypted messages anyone can display,
+    /// only the recipient can open.
+    Feed {
+        #[command(subcommand)]
+        cmd: FeedCmd,
+    },
     /// List webcams usable with `receive --camera`.
     #[cfg(feature = "camera")]
     Cameras,
@@ -151,6 +159,29 @@ enum Cmd {
         #[arg(short, long)]
         out: PathBuf,
     },
+}
+
+#[derive(Subcommand)]
+enum FeedCmd {
+    /// Encrypt a file to a paired device (or an age1… key set) and add it
+    /// to the public feed.
+    Publish {
+        file: PathBuf,
+        /// Paired device name, or the recipient's `age1… age1pq1…` key set.
+        #[arg(long)]
+        to: String,
+        /// Classic X25519 only (default: post-quantum hybrid when the key
+        /// set has one).
+        #[arg(long)]
+        classic: bool,
+    },
+    /// Add envelope files (.cqx) that arrived some other way.
+    Import {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// List the messages on this gateway's feed.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -314,6 +345,7 @@ fn main() -> Result<()> {
             PairCmd::Remove { name } => pair::remove(&name),
         },
         Cmd::Keygen { out } => keygen(&out),
+        Cmd::Feed { cmd } => feed_cmd(cmd),
         Cmd::Vault { cmd } => vault(cmd),
         Cmd::Setup { device, force } => setup(&device, force),
         Cmd::Restore {
@@ -321,6 +353,62 @@ fn main() -> Result<()> {
             device,
             force,
         } => restore(&seed, &device, force),
+    }
+}
+
+fn feed_cmd(cmd: FeedCmd) -> Result<()> {
+    match cmd {
+        FeedCmd::Publish { file, to, classic } => {
+            let (pk, desc) = pair::resolve(&to)?;
+            let method = if classic {
+                courierqr_core::Method::Classic
+            } else {
+                courierqr_core::Method::PostQuantum
+            };
+            let key = courierqr_core::SealKey::for_device(&pk, method).or_else(|_| {
+                courierqr_core::SealKey::for_device(&pk, courierqr_core::Method::Classic)
+            })?;
+            let data = fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            let name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_owned();
+            let (env, report) = courierqr_core::Envelope::seal_file(&name, &data, &key)?;
+            feed::add(&env)?;
+            println!(
+                "published {} ({} bytes encrypted) for {desc}",
+                env.id_hex(),
+                env.ciphertext().len()
+            );
+            eprintln!("metadata · {}", report.summary());
+            eprintln!("It now plays on this gateway's Receive tab (public feed).");
+            Ok(())
+        }
+        FeedCmd::Import { files } => {
+            for f in files {
+                let bytes = fs::read(&f).with_context(|| format!("reading {}", f.display()))?;
+                let env = courierqr_core::Envelope::decode(&bytes)
+                    .with_context(|| format!("{} is not a CourierQR envelope", f.display()))?;
+                let new = feed::add(&env)?;
+                println!(
+                    "{} {}",
+                    if new { "added" } else { "already had" },
+                    env.id_hex()
+                );
+            }
+            Ok(())
+        }
+        FeedCmd::List => {
+            let envs = feed::load()?;
+            if envs.is_empty() {
+                println!("the feed is empty (courierqr feed publish FILE --to DEVICE)");
+            }
+            for e in &envs {
+                println!("{}  {} bytes", e.id_hex(), e.ciphertext().len());
+            }
+            Ok(())
+        }
     }
 }
 

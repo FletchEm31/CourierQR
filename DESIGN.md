@@ -309,3 +309,19 @@ private default.
 Prior art to study: Tinfoil Chat (TFC), Bitmessage (everyone-gets-everything with trial
 decryption), Blockstream Satellite (one-way broadcast, anonymous reception), and private
 information retrieval research.
+
+### Public feed on the gateway (stage 1, built)
+
+Gateways replicate **envelopes** (`transport.rs`: random id + age ciphertext), never
+images. Each gateway keeps its copy in `<config>/feed/` (72 h retention, newest 512)
+and renders the slideshow locally: `feed::Playlist` gives every message its own endless
+RaptorQ stream and takes one frame from each in turn. The Receive tab plays it whenever
+the camera is idle, so any offline messenger pointed at the screen can collect messages
+meant for it. The gateway only displays; it cannot open them.
+
+`courierqr feed publish FILE --to DEVICE` seals a file into the feed; `feed import`
+adds `.cqx` envelopes that arrived another way; `feed list` shows what is on it.
+
+Next stages: gateway-to-gateway sync over Tor (push on publish, back-fill missed
+envelopes at login), then any gateway can mirror its slideshow to a public video stream.
+

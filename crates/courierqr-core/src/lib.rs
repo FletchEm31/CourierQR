@@ -35,6 +35,7 @@
 pub mod account;
 mod crypto;
 mod error;
+pub mod feed;
 pub mod frame;
 mod payload;
 pub mod pq;

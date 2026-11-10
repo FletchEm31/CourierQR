@@ -40,6 +40,23 @@ pub struct Envelope {
 }
 
 impl Envelope {
+    /// Scrub metadata from a file, then package and encrypt it into a fresh
+    /// envelope — the same plaintext a [`crate::Transmission`] would carry,
+    /// so whoever scans it off a feed opens it with the usual receiver.
+    pub fn seal_file(
+        name: &str,
+        data: &[u8],
+        key: &crate::SealKey,
+    ) -> Result<(Envelope, crate::ScrubReport)> {
+        let clean = crate::scrub::scrub(name, data);
+        let plaintext = crate::payload::pack(&clean.name, &clean.data)?;
+        let ciphertext = crate::crypto::seal(key, &plaintext)?;
+        if ciphertext.len() > MAX_TRANSFER_BYTES {
+            return Err(Error::TooLarge(ciphertext.len()));
+        }
+        Ok((Envelope::new(ciphertext), clean.report))
+    }
+
     /// Wrap an age ciphertext (from [`crate::seal`] /
     /// [`crate::Transmission`]'s input) with a fresh random id.
     pub fn new(ciphertext: Vec<u8>) -> Self {

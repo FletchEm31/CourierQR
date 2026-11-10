@@ -621,3 +621,52 @@ fn first_run_sets_up_an_account_then_unlocks_and_restores() {
     unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn receive_tab_plays_the_public_feed() {
+    let _guard = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("cqr-tui-feed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("dl")).unwrap();
+    // SAFETY: serialized by ENV_LOCK.
+    unsafe { std::env::set_var("COURIERQR_CONFIG_DIR", dir.join("cfg")) };
+    unsafe { std::env::remove_var("COURIERQR_RECOVERY_CODE") };
+    unsafe { std::env::remove_var("COURIERQR_ACCOUNT_NUMBER") };
+    crate::pair::own_public_key_quiet().unwrap(); // past first-run setup
+
+    let mut app = App::new(Opts {
+        camera: None,
+        camera_file: None,
+        out: dir.join("dl"),
+    });
+    key(&mut app, KeyCode::Char('2'));
+    app.tick();
+    let t = text(&render(&mut app));
+    assert!(t.contains("Press Enter to start the camera") && t.contains("no messages yet"));
+
+    // Two messages for someone else land on this gateway's feed.
+    let them = courierqr_core::generate_device_keys();
+    let key_for_them =
+        SealKey::for_device(&them.public, courierqr_core::Method::PostQuantum).unwrap();
+    for note in ["first message", "second message"] {
+        let (env, _) =
+            courierqr_core::Envelope::seal_file("n.txt", note.as_bytes(), &key_for_them).unwrap();
+        assert!(crate::feed::add(&env).unwrap());
+    }
+    app.receive.feed.force_sync();
+    app.tick();
+    let _ = render(&mut app); // sizes the code to the panel
+    app.receive.feed.force_sync();
+    app.tick();
+    assert_eq!(app.receive.feed.len(), 2);
+    assert!(app.receive.feed.code.is_some(), "a code is on screen");
+    let buf = render(&mut app);
+    let t = text(&buf);
+    assert!(t.contains("PUBLIC FEED") && t.contains("2 messages"), "{t}");
+    dump(&buf, "receive-feed");
+
+    // Starting the camera takes the panel back; the feed resumes after.
+    assert!(t.contains("public feed"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
