@@ -19,7 +19,7 @@ pub struct Logo {
     /// Rows drawn muted (a tagline), left of `accent_from`.
     pub muted_rows: &'static [usize],
     /// Rows forming the boxed tagline banner, left of `accent_from`: frame
-    /// muted, text bold and bright, `▒` drawn as a dark drop shadow.
+    /// muted, text bold and bright, `█`/`▀` drawn as a dark half-block drop shadow.
     pub banner_rows: &'static [usize],
 }
 
@@ -53,9 +53,9 @@ pub const LOGOS: &[Logo] = &[
             r#"╚██████╗╚██████╔╝╚██████╔╝██║  ██║██║███████╗██║  ██║  ████║       ████║ ████████████╔═╝"#,
             r#" ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝  ████║       ████║ ████████████║"#,
             r#"╔═══════════════════════════════════════════════════╗  ████║       ████║ ████╔═════████╗"#,
-            r#"║   NO NETWORK · ANONYMOUS ACCOUNTS · NO METADATA   ║▒ ████║ ████╗ ████║ ████║     ████║"#,
-            r#"╚═══════════════════════════════════════════════════╝▒ ╚═████████████╔═╝ ████║     ████║"#,
-            r#" ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ████████████║   ████║     ████║"#,
+            r#"║   NO NETWORK · ANONYMOUS ACCOUNTS · NO METADATA   ║█ ████║ ████╗ ████║ ████║     ████║"#,
+            r#"╚═══════════════════════════════════════════════════╝█ ╚═████████████╔═╝ ████║     ████║"#,
+            r#" ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   ████████████║   ████║     ████║"#,
             r#"                                                         ╚═════████══╝   ╚═══╝     ╚═══╝"#,
             r#"                                                               ╚═══╝"#,
         ],

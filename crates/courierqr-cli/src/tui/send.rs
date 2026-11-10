@@ -307,21 +307,24 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
 
     // Compose
     let focused = matches!(s.focus, Focus::Text);
-    let block = panel("message").border_style(Style::new().fg(if focused { ACCENT } else { LINE }));
+    let block = panel("message")
+        .edge(super::retro::Edge::Sunken)
+        .border_style(Style::new().fg(if focused { ACCENT() } else { LINE() }));
     let inner = block.inner(left);
     f.render_widget(block, left);
     let mut lines: Vec<Line> = s
         .text
         .split('\n')
-        .map(|l| Line::from(Span::styled(l.to_owned(), Style::new().fg(TEXT))))
+        .map(|l| Line::from(Span::styled(l.to_owned(), Style::new().fg(TEXT()))))
         .collect();
     if focused && let Some(last) = lines.last_mut() {
-        last.spans.push(Span::styled("▏", Style::new().fg(ACCENT)));
+        last.spans
+            .push(Span::styled("▏", Style::new().fg(ACCENT())));
     }
     if s.text.is_empty() && !focused {
         lines = vec![Line::from(Span::styled(
             "Press Enter and type (or paste) what you want to send.",
-            Style::new().fg(MUTED),
+            Style::new().fg(MUTED()),
         ))];
     }
     // Keep the end of long text in view.
@@ -345,11 +348,11 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(
                 if sel { "● " } else { "○ " },
-                Style::new().fg(if sel { ACCENT } else { MUTED }),
+                Style::new().fg(if sel { ACCENT() } else { MUTED() }),
             ),
             Span::styled(
                 format!("{n:<10}"),
-                Style::new().fg(TEXT).add_modifier(if sel && rfocus {
+                Style::new().fg(TEXT()).add_modifier(if sel && rfocus {
                     Modifier::BOLD
                 } else {
                     Modifier::empty()
@@ -357,7 +360,7 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
             ),
             Span::styled(
                 courierqr_core::fingerprint(k).unwrap_or_default(),
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             ),
         ]));
     }
@@ -365,9 +368,9 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(
             if sel { "● " } else { "○ " },
-            Style::new().fg(if sel { ACCENT } else { MUTED }),
+            Style::new().fg(if sel { ACCENT() } else { MUTED() }),
         ),
-        Span::styled("passphrase", Style::new().fg(TEXT)),
+        Span::styled("passphrase", Style::new().fg(TEXT())),
     ]));
     if sel {
         let pf = matches!(s.focus, Focus::Passphrase);
@@ -379,26 +382,30 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
                 } else {
                     "•".repeat(s.passphrase.chars().count())
                 },
-                Style::new().fg(if s.passphrase.is_empty() { MUTED } else { TEXT }),
+                Style::new().fg(if s.passphrase.is_empty() {
+                    MUTED()
+                } else {
+                    TEXT()
+                }),
             ),
-            Span::styled(if pf { "▏" } else { "" }, Style::new().fg(ACCENT)),
+            Span::styled(if pf { "▏" } else { "" }, Style::new().fg(ACCENT())),
         ]));
     }
     if devices.is_empty() {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "Pair a phone in Devices to skip passphrases.",
-            Style::new().fg(MUTED),
+            Style::new().fg(MUTED()),
         )));
     }
     // Encryption: what protects it, and who can open it.
-    let k = |t: &str| Span::styled(format!("{t:<9}"), Style::new().fg(MUTED));
-    let v = |t: String| Span::styled(t, Style::new().fg(TEXT));
-    let ok = |t: String| Span::styled(t, Style::new().fg(ACCENT));
+    let k = |t: &str| Span::styled(format!("{t:<9}"), Style::new().fg(MUTED()));
+    let v = |t: String| Span::styled(t, Style::new().fg(TEXT()));
+    let ok = |t: String| Span::styled(t, Style::new().fg(ACCENT()));
     let head = |t: &'static str| {
         Line::from(Span::styled(
             t,
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
         ))
     };
     lines.push(Line::raw(""));
@@ -411,13 +418,13 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
                     Span::raw("  "),
                     Span::styled(
                         if on { "● " } else { "○ " },
-                        Style::new().fg(if on { ACCENT } else { MUTED }),
+                        Style::new().fg(if on { ACCENT() } else { MUTED() }),
                     ),
                     Span::styled(
                         format!("{label:<13}"),
-                        Style::new().fg(if enabled { TEXT } else { MUTED }),
+                        Style::new().fg(if enabled { TEXT() } else { MUTED() }),
                     ),
-                    Span::styled(what.to_string(), Style::new().fg(MUTED)),
+                    Span::styled(what.to_string(), Style::new().fg(MUTED())),
                 ])
             };
             let pq_on = s.method == Method::PostQuantum;
@@ -499,23 +506,26 @@ pub(crate) fn draw(app: &mut App, f: &mut Frame, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled(
             "Ctrl+S",
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             " to encrypt and show it as QR codes here",
-            Style::new().fg(TEXT),
+            Style::new().fg(TEXT()),
         ),
     ]));
     if let Some(e) = &s.error {
         lines.push(Line::raw(""));
-        lines.push(Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))));
+        lines.push(Line::from(Span::styled(
+            e.clone(),
+            Style::new().fg(ERROR()),
+        )));
     }
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: true }).block(
             ratatui::widgets::Block::default().border_style(Style::new().fg(if rfocus {
-                ACCENT
+                ACCENT()
             } else {
-                LINE
+                LINE()
             })),
         ),
         rin,
@@ -529,22 +539,22 @@ fn draw_live(app: &mut App, f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(format!(" {state} "), Style::new().fg(BG).bg(if b.paused { WARN } else { ACCENT }).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {} · {} bytes → {}", b.name, b.bytes, b.to), Style::new().fg(TEXT)),
+                Span::styled(format!(" {state} "), Style::new().fg(BG()).bg(if b.paused { WARN() } else { ACCENT() }).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  {} · {} bytes → {}", b.name, b.bytes, b.to), Style::new().fg(TEXT())),
             ]),
             Line::from(Span::styled(
                 format!(
                     "  shown {} · receiver needs ≈{} · {} per second · QR v{}   Point the phone at this screen (Receive tab).",
                     b.shown, b.needed, b.fps, b.version
                 ),
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
             Line::from(Span::styled(
                 format!("  metadata · {}", b.scrub),
-                Style::new().fg(ACCENT),
+                Style::new().fg(ACCENT()),
             )),
         ])
-        .style(Style::new().bg(BG)),
+        .style(Style::new().bg(BG())),
         status,
     );
     // White backdrop so the quiet zone is unmistakable on dark themes.

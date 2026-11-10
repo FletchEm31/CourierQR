@@ -225,9 +225,12 @@ fn draw_fullscreen(app: &App, f: &mut Frame, area: Rect) {
         Paragraph::new(Line::from(vec![
             Span::styled(
                 format!(" fingerprint {fp} "),
-                Style::new().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(BG())
+                    .bg(ACCENT())
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(note, Style::new().fg(if fits { TEXT } else { WARN })),
+            Span::styled(note, Style::new().fg(if fits { TEXT() } else { WARN() })),
         ])),
         top,
     );
@@ -259,10 +262,13 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         f.render_widget(
             Paragraph::new(vec![
                 Line::raw(""),
-                Line::from(Span::styled("No phones paired yet.", Style::new().fg(TEXT))),
+                Line::from(Span::styled(
+                    "No phones paired yet.",
+                    Style::new().fg(TEXT()),
+                )),
                 Line::from(Span::styled(
                     "Press a, then paste the key from the phone's Keys tab.",
-                    Style::new().fg(MUTED),
+                    Style::new().fg(MUTED()),
                 )),
             ]),
             list_area,
@@ -280,17 +286,17 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                 ListItem::new(Line::from(vec![
                     Span::styled(
                         format!(" {n:<14}"),
-                        Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                        Style::new().fg(TEXT()).add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(format!("{fp}  "), Style::new().fg(ACCENT)),
-                    Span::styled(short, Style::new().fg(MUTED)),
+                    Span::styled(format!("{fp}  "), Style::new().fg(ACCENT())),
+                    Span::styled(short, Style::new().fg(MUTED())),
                 ]))
             })
             .collect();
         let mut state = ListState::default().with_selected(Some(d.selected));
         f.render_stateful_widget(
             List::new(items)
-                .highlight_style(Style::new().bg(PANEL))
+                .highlight_style(Style::new().bg(PANEL()))
                 .highlight_symbol("›"),
             list_area,
             &mut state,
@@ -300,15 +306,15 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 "Computer → phone. On the phone: Keys → This phone's key",
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
             Line::from(Span::styled(
                 "shows a key and fingerprint. Add it here (a), and only",
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
             Line::from(Span::styled(
                 "confirm if both screens show the same fingerprint.",
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
         ])
         .wrap(Wrap { trim: true }),
@@ -339,10 +345,10 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             f.render_widget(
                 Paragraph::new(vec![
                     Line::from(vec![
-                        Span::styled("fingerprint  ", Style::new().fg(MUTED)),
+                        Span::styled("fingerprint  ", Style::new().fg(MUTED())),
                         Span::styled(
                             fp.clone(),
-                            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                            Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
                         ),
                     ]),
                     Line::from(Span::styled(
@@ -351,12 +357,12 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                         } else {
                             "keys: classic X25519"
                         },
-                        Style::new().fg(MUTED),
+                        Style::new().fg(MUTED()),
                     )),
                     Line::raw(""),
                     Line::from(Span::styled(
                         "Press f to show the pairing code full screen. On the phone: Keys → Scan computer's key, and check the fingerprint.",
-                        Style::new().fg(TEXT),
+                        Style::new().fg(TEXT()),
                     )),
                 ])
                 .wrap(Wrap { trim: true }),
@@ -366,7 +372,7 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         None => f.render_widget(
             Paragraph::new(Span::styled(
                 "couldn't load or create this computer's key",
-                Style::new().fg(ERROR),
+                Style::new().fg(ERROR()),
             )),
             rin,
         ),
@@ -377,7 +383,7 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         let w = 70.min(area.width.saturating_sub(4));
         let r = Rect::new(area.x + (area.width - w) / 2, area.y + 2, w, h);
         f.render_widget(Clear, r);
-        let b = panel(title).border_style(Style::new().fg(ACCENT));
+        let b = panel(title).border_style(Style::new().fg(ACCENT()));
         let i = b.inner(r);
         f.render_widget(b, r);
         i
@@ -392,15 +398,15 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             let i = dialog(f, 10, "pair a phone");
             let fld = |label: &str, v: &str, active: bool| {
                 Line::from(vec![
-                    Span::styled(format!("{label:<6}"), Style::new().fg(MUTED)),
-                    Span::styled(v.to_owned(), Style::new().fg(TEXT)),
-                    Span::styled(if active { "▏" } else { "" }, Style::new().fg(ACCENT)),
+                    Span::styled(format!("{label:<6}"), Style::new().fg(MUTED())),
+                    Span::styled(v.to_owned(), Style::new().fg(TEXT())),
+                    Span::styled(if active { "▏" } else { "" }, Style::new().fg(ACCENT())),
                 ])
             };
             let mut lines = vec![
                 Line::from(Span::styled(
                     "Paste the age1… key from the phone (Keys tab).",
-                    Style::new().fg(MUTED),
+                    Style::new().fg(MUTED()),
                 )),
                 Line::raw(""),
                 fld("name", name, *field == 0),
@@ -408,7 +414,10 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             ];
             if let Some(e) = error {
                 lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))));
+                lines.push(Line::from(Span::styled(
+                    e.clone(),
+                    Style::new().fg(ERROR()),
+                )));
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), i);
         }
@@ -418,18 +427,18 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                 Paragraph::new(vec![
                     Line::from(Span::styled(
                         format!("Does {name} show exactly this fingerprint?"),
-                        Style::new().fg(TEXT),
+                        Style::new().fg(TEXT()),
                     )),
                     Line::raw(""),
                     Line::from(Span::styled(
                         fp.clone(),
-                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                        Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
                     ))
                     .centered(),
                     Line::raw(""),
                     Line::from(Span::styled(
                         "y  yes, pair it      n  no, cancel",
-                        Style::new().fg(MUTED),
+                        Style::new().fg(MUTED()),
                     ))
                     .centered(),
                 ]),

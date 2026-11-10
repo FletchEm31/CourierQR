@@ -134,7 +134,7 @@ pub(crate) fn draw(view: &FeedView, f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(vec![
-                Span::styled(" PUBLIC FEED ", Style::new().fg(BG).bg(ACCENT)),
+                Span::styled(" PUBLIC FEED ", Style::new().fg(BG()).bg(ACCENT())),
                 Span::styled(
                     format!(
                         "  {} message{} · {} per second · QR v{} · shown {}",
@@ -144,12 +144,12 @@ pub(crate) fn draw(view: &FeedView, f: &mut Frame, area: Rect) {
                         view.version,
                         view.shown
                     ),
-                    Style::new().fg(TEXT),
+                    Style::new().fg(TEXT()),
                 ),
             ]),
             Line::from(Span::styled(
                 "  Offline messengers: point the camera here to collect messages meant for you. Enter: scan your phone instead.",
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
         ]),
         status,
@@ -158,7 +158,7 @@ pub(crate) fn draw(view: &FeedView, f: &mut Frame, area: Rect) {
         f.render_widget(
             Paragraph::new(Span::styled(
                 "  make the terminal bigger to show the feed",
-                Style::new().fg(WARN),
+                Style::new().fg(WARN()),
             )),
             qr,
         );

@@ -634,7 +634,7 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         _ if show_feed => "public feed",
         _ => "camera",
     };
-    let block = panel(title).border_style(Style::new().fg(if flash { ACCENT } else { LINE }));
+    let block = panel(title).border_style(Style::new().fg(if flash { ACCENT() } else { LINE() }));
     let inner = block.inner(left);
     f.render_widget(block, left);
     if show_feed {
@@ -647,38 +647,41 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                     Phase::Idle => vec![
                         Line::from(Span::styled(
                             "Press Enter to start the camera",
-                            Style::new().fg(TEXT),
+                            Style::new().fg(TEXT()),
                         )),
                         Line::raw(""),
                         Line::from(Span::styled(
                             "On the phone: Send → choose a file or type text → Start sending,",
-                            Style::new().fg(MUTED),
+                            Style::new().fg(MUTED()),
                         )),
                         Line::from(Span::styled(
                             "then hold the screen 20–30 cm from the webcam.",
-                            Style::new().fg(MUTED),
+                            Style::new().fg(MUTED()),
                         )),
                         Line::raw(""),
                         Line::from(Span::styled(
                             "Public feed: no messages yet. It plays here once there are some.",
-                            Style::new().fg(MUTED),
+                            Style::new().fg(MUTED()),
                         )),
                     ],
                     Phase::Scanning => vec![Line::from(Span::styled(
                         "opening camera…",
-                        Style::new().fg(MUTED),
+                        Style::new().fg(MUTED()),
                     ))],
                     Phase::Failed(e) => vec![
-                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))),
+                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR()))),
                         Line::raw(""),
-                        Line::from(Span::styled("Enter to try again", Style::new().fg(MUTED))),
+                        Line::from(Span::styled("Enter to try again", Style::new().fg(MUTED()))),
                     ],
                     Phase::Unlock { .. } => vec![Line::from(Span::styled(
                         "received everything ✓",
-                        Style::new().fg(ACCENT),
+                        Style::new().fg(ACCENT()),
                     ))],
                     Phase::Done { .. } => {
-                        vec![Line::from(Span::styled("done ✓", Style::new().fg(ACCENT)))]
+                        vec![Line::from(Span::styled(
+                            "done ✓",
+                            Style::new().fg(ACCENT()),
+                        ))]
                     }
                 };
                 let pad = (inner.height as usize).saturating_sub(msg.len()) / 2;
@@ -708,12 +711,12 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     let tin = block.inner(transfer);
     f.render_widget(block, transfer);
     let state = match (&r.phase, r.needed) {
-        (Phase::Idle, _) => ("ready", MUTED),
-        (Phase::Scanning, 0) => ("looking for codes…", WARN),
-        (Phase::Scanning, _) => ("receiving", ACCENT),
-        (Phase::Unlock { .. }, _) => ("needs a passphrase", WARN),
-        (Phase::Done { .. }, _) => ("complete", ACCENT),
-        (Phase::Failed(_), _) => ("stopped", ERROR),
+        (Phase::Idle, _) => ("ready", MUTED()),
+        (Phase::Scanning, 0) => ("looking for codes…", WARN()),
+        (Phase::Scanning, _) => ("receiving", ACCENT()),
+        (Phase::Unlock { .. }, _) => ("needs a passphrase", WARN()),
+        (Phase::Done { .. }, _) => ("complete", ACCENT()),
+        (Phase::Failed(_), _) => ("stopped", ERROR()),
     };
     let ratio = if matches!(r.phase, Phase::Done { .. } | Phase::Unlock { .. }) {
         1.0
@@ -740,9 +743,9 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             .ratio(ratio)
             .label(Span::styled(
                 format!("{:.0}%", ratio * 100.0),
-                Style::new().fg(TEXT),
+                Style::new().fg(TEXT()),
             ))
-            .gauge_style(Style::new().fg(ACCENT).bg(LINE)),
+            .gauge_style(Style::new().fg(ACCENT()).bg(LINE())),
         g,
     );
     let pieces = if r.needed > 0 {
@@ -754,10 +757,10 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         Paragraph::new(vec![
             Line::raw(""),
             Line::from(vec![
-                Span::styled(pieces, Style::new().fg(TEXT)),
+                Span::styled(pieces, Style::new().fg(TEXT())),
                 Span::styled(
                     format!("   {:.0} s", r.elapsed.as_secs_f64()),
-                    Style::new().fg(MUTED),
+                    Style::new().fg(MUTED()),
                 ),
             ]),
         ]),
@@ -780,7 +783,7 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(
         Sparkline::default()
             .data(&data)
-            .style(Style::new().fg(ACCENT)),
+            .style(Style::new().fg(ACCENT())),
         spark,
     );
     let recent: u64 = r.rate.iter().rev().skip(1).take(5).sum();
@@ -791,7 +794,7 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
                 "{:.1}/s over the last 5 s · peak {peak}/s",
                 recent as f64 / 5.0
             ),
-            Style::new().fg(MUTED),
+            Style::new().fg(MUTED()),
         )),
         txt,
     );
@@ -802,14 +805,14 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
     f.render_widget(block, reads);
     let row = |k: &str, v: String, c: Color| {
         Line::from(vec![
-            Span::styled(format!("{k:<18}"), Style::new().fg(MUTED)),
+            Span::styled(format!("{k:<18}"), Style::new().fg(MUTED())),
             Span::styled(v, Style::new().fg(c)),
         ])
     };
     let mut lines = vec![
-        row("camera frames", r.frames.to_string(), TEXT),
-        row("QR codes read", r.codes.to_string(), TEXT),
-        row("transfer pieces", r.received.to_string(), ACCENT),
+        row("camera frames", r.frames.to_string(), TEXT()),
+        row("QR codes read", r.codes.to_string(), TEXT()),
+        row("transfer pieces", r.received.to_string(), ACCENT()),
     ];
     if r.rej.not_courierqr > 0 {
         let what = match r.rej.example.as_deref() {
@@ -822,18 +825,18 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         lines.push(row(
             "not a transfer",
             format!("{} · {what}", r.rej.not_courierqr),
-            WARN,
+            WARN(),
         ));
     }
     if r.rej.damaged > 0 {
         lines.push(row(
             "damaged",
             format!("{} (checksum failed)", r.rej.damaged),
-            ERROR,
+            ERROR(),
         ));
     }
     if r.rej.other > 0 {
-        lines.push(row("unsupported", r.rej.other.to_string(), ERROR));
+        lines.push(row("unsupported", r.rej.other.to_string(), ERROR()));
     }
     f.render_widget(Paragraph::new(lines), rin);
 
@@ -842,21 +845,24 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
         Phase::Unlock {
             input, error, note, ..
         } => {
-            let block = panel("unlock").border_style(Style::new().fg(WARN));
+            let block = panel("unlock").border_style(Style::new().fg(WARN()));
             let uin = block.inner(bottom);
             f.render_widget(block, bottom);
             let mut lines = vec![
-                Line::from(Span::styled(note.clone(), Style::new().fg(TEXT))),
+                Line::from(Span::styled(note.clone(), Style::new().fg(TEXT()))),
                 Line::raw(""),
                 Line::from(vec![
-                    Span::styled("passphrase  ", Style::new().fg(MUTED)),
-                    Span::styled("•".repeat(input.chars().count()), Style::new().fg(TEXT)),
-                    Span::styled("▏", Style::new().fg(ACCENT)),
+                    Span::styled("passphrase  ", Style::new().fg(MUTED())),
+                    Span::styled("•".repeat(input.chars().count()), Style::new().fg(TEXT())),
+                    Span::styled("▏", Style::new().fg(ACCENT())),
                 ]),
             ];
             if let Some(e) = error {
                 lines.push(Line::raw(""));
-                lines.push(Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))));
+                lines.push(Line::from(Span::styled(
+                    e.clone(),
+                    Style::new().fg(ERROR()),
+                )));
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), uin);
         }
@@ -866,28 +872,28 @@ pub(crate) fn draw(app: &App, f: &mut Frame, area: Rect) {
             size,
             text,
         } => {
-            let block = panel("received").border_style(Style::new().fg(ACCENT));
+            let block = panel("received").border_style(Style::new().fg(ACCENT()));
             let din = block.inner(bottom);
             f.render_widget(block, bottom);
             let mut lines = vec![
                 Line::from(Span::styled(
                     name.clone(),
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
                     format!("{size} bytes → {}", super::shorten_home(path)),
-                    Style::new().fg(MUTED),
+                    Style::new().fg(MUTED()),
                 )),
                 Line::raw(""),
             ];
             match text {
                 Some(t) => lines.extend(
                     t.lines()
-                        .map(|l| Line::from(Span::styled(l.to_owned(), Style::new().fg(TEXT)))),
+                        .map(|l| Line::from(Span::styled(l.to_owned(), Style::new().fg(TEXT())))),
                 ),
                 None => lines.push(Line::from(Span::styled(
                     "(binary file)",
-                    Style::new().fg(MUTED),
+                    Style::new().fg(MUTED()),
                 ))),
             }
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), din);
@@ -903,9 +909,9 @@ fn draw_camera_details(app: &App, f: &mut Frame, area: Rect) {
     let block = panel("camera details");
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let k = |s: &str| Span::styled(format!("{s:<8}"), Style::new().fg(MUTED));
-    let v = |s: String| Span::styled(s, Style::new().fg(TEXT));
-    let a = |s: String| Span::styled(s, Style::new().fg(ACCENT));
+    let k = |s: &str| Span::styled(format!("{s:<8}"), Style::new().fg(MUTED()));
+    let v = |s: String| Span::styled(s, Style::new().fg(TEXT()));
+    let a = |s: String| Span::styled(s, Style::new().fg(ACCENT()));
     let Some(i) = &r.info else {
         let names: Vec<String> = r.sources.iter().map(|s| s.1.clone()).collect();
         let lines = vec![
@@ -919,7 +925,7 @@ fn draw_camera_details(app: &App, f: &mut Frame, area: Rect) {
             ]),
             Line::from(Span::styled(
                 "Start the camera to see its resolution, frame rate and focus.",
-                Style::new().fg(MUTED),
+                Style::new().fg(MUTED()),
             )),
         ];
         f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
@@ -956,21 +962,21 @@ fn draw_camera_details(app: &App, f: &mut Frame, area: Rect) {
         if r.decode_ms > 1000.0 / set {
             Some((
                 "decoding is the bottleneck: frames arrive faster than they can be scanned",
-                WARN,
+                WARN(),
             ))
         } else {
             Some((
                 "camera is delivering fewer frames than set (low light lowers webcam fps)",
-                WARN,
+                WARN(),
             ))
         }
     } else if r.codes == 0 && r.frames > 60 {
         Some((
             "no QR codes seen yet: move the phone closer, brightness up, avoid glare",
-            WARN,
+            WARN(),
         ))
     } else {
-        Some(("camera and decoder keeping up", ACCENT))
+        Some(("camera and decoder keeping up", ACCENT()))
     };
     let mut lines = vec![
         Line::from(vec![

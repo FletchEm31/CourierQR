@@ -8,6 +8,7 @@ mod devices;
 mod feed;
 mod logo;
 mod receive;
+pub(crate) mod retro;
 mod send;
 
 use std::io::stdout;
@@ -23,36 +24,61 @@ use ratatui::crossterm::execute;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 
 use crate::pair;
 use courierqr_core::secrecy::ExposeSecret;
 
-// ---------------------------------------------------------------- theme (matches the phone app)
+// ---------------------------------------------------------------- theme
 
+/// Colour roles, read from the active retro theme ([`retro::t`]). Functions
+/// (not consts) so a theme switch repaints everything on the next frame.
+#[allow(non_snake_case)]
 pub(crate) mod theme {
+    use super::retro::t;
     use ratatui::style::Color;
-    pub const BG: Color = Color::Rgb(13, 15, 18);
-    pub const PANEL: Color = Color::Rgb(22, 26, 32);
-    pub const LINE: Color = Color::Rgb(38, 44, 53);
-    pub const TEXT: Color = Color::Rgb(232, 235, 239);
-    pub const MUTED: Color = Color::Rgb(139, 148, 161);
-    pub const ACCENT: Color = Color::Rgb(61, 220, 151);
-    pub const WARN: Color = Color::Rgb(255, 184, 77);
-    pub const ERROR: Color = Color::Rgb(255, 107, 107);
+    /// Window face: the background of most of the screen.
+    pub fn BG() -> Color {
+        t().face
+    }
+    /// Strip under the tabs / key hints.
+    pub fn PANEL() -> Color {
+        t().light
+    }
+    /// Plain (unfocused) border colour.
+    pub fn LINE() -> Color {
+        t().hi
+    }
+    pub fn TEXT() -> Color {
+        t().text
+    }
+    pub fn MUTED() -> Color {
+        t().dim
+    }
+    pub fn ACCENT() -> Color {
+        t().accent
+    }
+    pub fn WARN() -> Color {
+        t().warn
+    }
+    pub fn ERROR() -> Color {
+        t().error
+    }
     /// Drop shadow under the header banner.
-    pub const SHADOW: Color = Color::Rgb(52, 60, 72);
+    pub fn SHADOW() -> Color {
+        t().logo_shadow
+    }
+    /// Sunken wells (the logo area, status-bar cells).
+    pub fn FIELD() -> Color {
+        t().field
+    }
 }
 use theme::*;
 
-pub(crate) fn panel(title: &str) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(LINE))
-        .title(Span::styled(format!(" {title} "), Style::new().fg(MUTED)))
-        .style(Style::new().bg(BG).fg(TEXT))
+/// A titled Win9x-style group box.
+pub(crate) fn panel(title: &str) -> retro::Panel<'_> {
+    retro::Panel::new(title)
 }
 
 // ---------------------------------------------------------------- app
@@ -101,8 +127,27 @@ enum Command {
     StartStop,
     NextCamera,
     AddDevice,
+    CycleTheme,
+    LogoSize,
     Quit,
 }
+
+/// Clickable bits of the window chrome (title bar).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Chrome {
+    Theme,
+    Logo,
+    Close,
+}
+
+/// The header logo sizes the title bar's Logo button steps through
+/// (index into [`logo::LOGOS`]); `None` is "fit the window".
+const LOGO_SIZES: [(Option<usize>, &str); 4] = [
+    (None, "Auto"),
+    (Some(0), "L"),
+    (Some(1), "M"),
+    (Some(logo::COMPACT), "S"),
+];
 
 const COMMANDS: &[(Command, &str)] = &[
     (Command::GoSend, "Go to Send"),
@@ -111,6 +156,8 @@ const COMMANDS: &[(Command, &str)] = &[
     (Command::StartStop, "Start / stop the camera"),
     (Command::NextCamera, "Switch camera"),
     (Command::AddDevice, "Pair a new device"),
+    (Command::CycleTheme, "Change colour theme"),
+    (Command::LogoSize, "Change logo size"),
     (Command::Quit, "Quit"),
 ];
 
@@ -141,6 +188,10 @@ pub(crate) struct App {
     quit: bool,
     /// Tab label hit-boxes from the last draw, for mouse clicks.
     tab_hits: Vec<(Rect, Tab)>,
+    /// Title-bar button hit-boxes from the last draw.
+    chrome_hits: Vec<(Rect, Chrome)>,
+    /// Index into [`LOGO_SIZES`].
+    logo_size: usize,
     /// This computer's public key + fingerprint (created on first run).
     pub(crate) own_key: Option<(String, String)>,
     pub(crate) gate: Option<Gate>,
@@ -283,6 +334,7 @@ impl App {
         // First run (no identity yet): offer account setup rather than
         // silently generating standalone keys. On an I/O error, fall back
         // to the old behaviour.
+        retro::load();
         let first_run = !pair::has_identity().unwrap_or(true);
         let (own_key, gate) = if first_run {
             (None, Some(Gate::Welcome { selected: 0 }))
@@ -322,6 +374,8 @@ impl App {
             toast: None,
             quit: false,
             tab_hits: Vec::new(),
+            chrome_hits: Vec::new(),
+            logo_size: 0,
             own_key,
             gate,
             out: opts.out,
@@ -631,13 +685,13 @@ impl App {
         let Some(gate) = self.gate.as_ref() else {
             return;
         };
-        let muted = |s: String| Line::from(Span::styled(s, Style::new().fg(MUTED)));
-        let text = |s: String| Line::from(Span::styled(s, Style::new().fg(TEXT)));
+        let muted = |s: String| Line::from(Span::styled(s, Style::new().fg(MUTED())));
+        let text = |s: String| Line::from(Span::styled(s, Style::new().fg(TEXT())));
         let field = |label: &str, value: String| {
             Line::from(vec![
-                Span::styled(format!("  {label:<8}"), Style::new().fg(MUTED)),
-                Span::styled(value, Style::new().fg(ACCENT)),
-                Span::styled("▏", Style::new().fg(ACCENT)),
+                Span::styled(format!("  {label:<8}"), Style::new().fg(MUTED())),
+                Span::styled(value, Style::new().fg(ACCENT())),
+                Span::styled("▏", Style::new().fg(ACCENT())),
             ])
         };
         let err_lines = |e: &Option<String>| -> Vec<Line<'static>> {
@@ -645,7 +699,7 @@ impl App {
                 .map(|e| {
                     vec![
                         Line::raw(""),
-                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR))),
+                        Line::from(Span::styled(e.clone(), Style::new().fg(ERROR()))),
                     ]
                 })
                 .unwrap_or_default()
@@ -653,7 +707,7 @@ impl App {
         let hint = |s: &str| {
             vec![
                 Line::raw(""),
-                Line::from(Span::styled(s.to_owned(), Style::new().fg(MUTED))),
+                Line::from(Span::styled(s.to_owned(), Style::new().fg(MUTED()))),
             ]
         };
 
@@ -679,13 +733,13 @@ impl App {
                 for (i, (name, desc)) in WELCOME.iter().enumerate() {
                     let on = i == *selected;
                     l.push(Line::from(vec![
-                        Span::styled(if on { " ▸ " } else { "   " }, Style::new().fg(ACCENT)),
+                        Span::styled(if on { " ▸ " } else { "   " }, Style::new().fg(ACCENT())),
                         Span::styled(
                             format!("{}  {name}", i + 1),
                             if on {
-                                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)
+                                Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD)
                             } else {
-                                Style::new().fg(TEXT)
+                                Style::new().fg(TEXT())
                             },
                         ),
                     ]));
@@ -734,14 +788,14 @@ impl App {
                 input,
                 error,
             } => {
-                let key = |s: &str| Span::styled(format!("  {s:<16}"), Style::new().fg(MUTED));
+                let key = |s: &str| Span::styled(format!("  {s:<16}"), Style::new().fg(MUTED()));
                 let val = |s: String| {
-                    Span::styled(s, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
+                    Span::styled(s, Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD))
                 };
                 let mut l = vec![
                     Line::from(Span::styled(
                         "Write these down now. They are shown once.",
-                        Style::new().fg(WARN).add_modifier(Modifier::BOLD),
+                        Style::new().fg(WARN()).add_modifier(Modifier::BOLD),
                     )),
                     Line::raw(""),
                     Line::from(vec![key("account number"), val(pending.account_number())]),
@@ -820,12 +874,7 @@ impl App {
                     Event::Paste(text) => self.paste(&text),
                     Event::Mouse(m) => {
                         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                            let hit = self.tab_hits.iter().find(|(r, _)| {
-                                m.column >= r.x && m.column < r.x + r.width && m.row == r.y
-                            });
-                            if let Some((_, t)) = hit {
-                                self.tab = *t;
-                            }
+                            self.click(m.column, m.row);
                         }
                     }
                     _ => {}
@@ -857,6 +906,29 @@ impl App {
         }
     }
 
+    /// A left click at (column, row): tabs and title-bar buttons.
+    pub(crate) fn click(&mut self, x: u16, y: u16) {
+        let inside = |r: &Rect| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+        let chrome = self
+            .chrome_hits
+            .iter()
+            .find(|(r, _)| inside(r))
+            .map(|(_, c)| *c);
+        if let Some(c) = chrome {
+            match c {
+                Chrome::Theme => self.run_command(Command::CycleTheme),
+                Chrome::Logo => self.run_command(Command::LogoSize),
+                Chrome::Close => self.quit = true,
+            }
+            return;
+        }
+        if self.gate.is_none()
+            && let Some((_, t)) = self.tab_hits.iter().find(|(r, _)| inside(r))
+        {
+            self.tab = *t;
+        }
+    }
+
     fn run_command(&mut self, c: Command) {
         match c {
             Command::GoReceive => self.tab = Tab::Receive,
@@ -874,6 +946,17 @@ impl App {
             Command::AddDevice => {
                 self.tab = Tab::Devices;
                 self.devices.begin_add();
+            }
+            Command::CycleTheme => {
+                let name = retro::cycle();
+                self.toast(format!("Theme: {name}"), false);
+            }
+            Command::LogoSize => {
+                self.logo_size = (self.logo_size + 1) % LOGO_SIZES.len();
+                self.toast(
+                    format!("Logo size: {}", LOGO_SIZES[self.logo_size].1),
+                    false,
+                );
             }
             Command::Quit => self.quit = true,
         }
@@ -959,8 +1042,11 @@ impl App {
     // ---------------------------------------------------------------- drawing
 
     pub(crate) fn draw(&mut self, f: &mut Frame) {
-        let area = f.area();
-        f.render_widget(Block::default().style(Style::new().bg(BG)), area);
+        let full = f.area();
+        f.render_widget(Block::default().style(Style::new().bg(BG())), full);
+        let [title, area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(4)]).areas(full);
+        self.draw_title(f, title);
 
         if self.gate.is_some() {
             let logo = self.fitting_logo(area.width);
@@ -987,7 +1073,7 @@ impl App {
         self.send.extra_rows = header_h.saturating_sub(compact_h);
         let [header, tabs, body, footer] = Layout::vertical([
             Constraint::Length(header_h),
-            Constraint::Length(1),
+            Constraint::Length(2),
             Constraint::Min(8),
             Constraint::Length(2),
         ])
@@ -1008,7 +1094,8 @@ impl App {
 
     fn fitting_logo(&self, width: u16) -> &'static logo::Logo {
         let room = width.saturating_sub(64) as usize; // leave the status column room
-        let chosen = &logo::LOGOS[0];
+        let pick = LOGO_SIZES[self.logo_size].0.unwrap_or(0);
+        let chosen = &logo::LOGOS[pick];
         if chosen.width() <= room {
             return chosen;
         }
@@ -1021,11 +1108,8 @@ impl App {
     }
 
     fn draw_header(&self, f: &mut Frame, area: Rect, logo: &logo::Logo) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(LINE))
-            .style(Style::new().bg(BG));
+        // The logo sits in a sunken well, like the mockup.
+        let block = panel("").edge(retro::Edge::Sunken);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let [left, right] = Layout::horizontal([
@@ -1045,37 +1129,40 @@ impl App {
                 .map(|(i, ch)| {
                     let accent = i >= logo.accent_from || i < logo.accent_until;
                     let style = if accent {
-                        Style::new().fg(ACCENT)
+                        Style::new().fg(ACCENT())
                     } else if banner {
                         match ch {
-                            '▒' => Style::new().fg(SHADOW),
+                            '▒' | '█' | '▀' => Style::new().fg(SHADOW()),
                             '═' | '║' | '╔' | '╗' | '╚' | '╝' => {
-                                Style::new().fg(ACCENT)
+                                Style::new().fg(ACCENT())
                             }
-                            _ => Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                            _ => Style::new().fg(TEXT()).add_modifier(Modifier::BOLD),
                         }
                     } else if muted {
-                        Style::new().fg(MUTED)
+                        Style::new().fg(MUTED())
                     } else {
-                        Style::new().fg(TEXT)
+                        Style::new().fg(TEXT())
                     };
                     Span::styled(ch.to_string(), style)
                 })
                 .collect();
             lines.push(Line::from(spans));
         }
-        f.render_widget(Paragraph::new(lines).style(Style::new().bg(BG)), left);
+        f.render_widget(Paragraph::new(lines).style(Style::new().bg(FIELD())), left);
 
         let paired = pair::load().map(|d| d.len()).unwrap_or(0);
         let fp = self
             .own_key
             .as_ref()
             .map(|k| k.1.as_str())
-            .unwrap_or("not set up");
+            .unwrap_or(match self.gate {
+                Some(Gate::Unlock { .. }) => "locked",
+                _ => "not set up",
+            });
         let (cam_dot, cam) = self.receive.source_label();
         let kv = |k: &str, v: Span<'static>| {
             Line::from(vec![
-                Span::styled(format!("{k:<12}"), Style::new().fg(MUTED)),
+                Span::styled(format!("{k:<12}"), Style::new().fg(MUTED())),
                 v,
             ])
         };
@@ -1084,23 +1171,23 @@ impl App {
                 "this device",
                 Span::styled(
                     fp.to_owned(),
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
                 ),
             ),
             kv(
                 "camera",
-                Span::styled(format!("{cam_dot} {cam}"), Style::new().fg(TEXT)),
+                Span::styled(format!("{cam_dot} {cam}"), Style::new().fg(TEXT())),
             ),
             kv(
                 "paired",
                 Span::styled(
                     format!("{paired} device{}", if paired == 1 { "" } else { "s" }),
-                    Style::new().fg(TEXT),
+                    Style::new().fg(TEXT()),
                 ),
             ),
             kv(
                 "saving to",
-                Span::styled(shorten_home(&self.out), Style::new().fg(TEXT)),
+                Span::styled(shorten_home(&self.out), Style::new().fg(TEXT())),
             ),
         ];
         // Top-right corner, flush right: size the block to its widest line
@@ -1112,45 +1199,107 @@ impl App {
             width: w,
             height: (status.len() as u16).min(right.height),
         };
-        f.render_widget(Paragraph::new(status).style(Style::new().bg(BG)), corner);
-    }
-
-    fn draw_tabs(&mut self, f: &mut Frame, area: Rect) {
-        self.tab_hits.clear();
-        let mut spans = vec![Span::raw(" ")];
-        let mut x = area.x + 1;
-        for (i, t) in Tab::ALL.iter().enumerate() {
-            let label = format!(" {} {} ", i + 1, t.label());
-            let w = label.chars().count() as u16;
-            let style = if *t == self.tab {
-                Style::new().fg(BG).bg(ACCENT).add_modifier(Modifier::BOLD)
-            } else {
-                Style::new().fg(MUTED)
-            };
-            self.tab_hits.push((Rect::new(x, area.y, w, 1), *t));
-            spans.push(Span::styled(label, style));
-            spans.push(Span::raw(" "));
-            x += w + 1;
-        }
         f.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::new().bg(BG)),
-            area,
+            Paragraph::new(status).style(Style::new().bg(FIELD())),
+            corner,
         );
     }
 
-    fn draw_footer(&self, f: &mut Frame, area: Rect) {
-        let [msg, keys] =
-            Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
-        if let Some((t, err, _)) = &self.toast {
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    format!(" {t}"),
-                    Style::new().fg(if *err { ERROR } else { ACCENT }),
-                ))
-                .style(Style::new().bg(BG)),
-                msg,
-            );
+    /// Title bar: the theme's gradient, the window title (device
+    /// fingerprint, never the account number) and the Theme / Logo / ×
+    /// buttons on the right.
+    fn draw_title(&mut self, f: &mut Frame, area: Rect) {
+        self.chrome_hits.clear();
+        let p = retro::t();
+        let buf = f.buffer_mut();
+        retro::title_gradient(buf, area);
+        let who = match (&self.own_key, &self.gate) {
+            (Some(k), _) => format!("Gateway · {}", k.1),
+            (None, Some(Gate::Unlock { .. })) => "Gateway · locked".to_owned(),
+            _ => "Gateway · not set up".to_owned(),
+        };
+        let bold = Style::new().fg(p.t_text).add_modifier(Modifier::BOLD);
+        // Buttons, right to left.
+        let buttons = [
+            (Chrome::Close, "×".to_owned()),
+            (
+                Chrome::Logo,
+                format!("Logo: {}", LOGO_SIZES[self.logo_size].1),
+            ),
+            (Chrome::Theme, format!("Theme: {}", p.name)),
+        ];
+        let mut right = area.right();
+        for (c, label) in buttons {
+            let w = label.chars().count() as u16 + 3;
+            if right < area.x + w + 30 {
+                break;
+            }
+            right -= w + 1;
+            let r = retro::button(buf, right, area.y, &label, false);
+            self.chrome_hits.push((r, c));
         }
+        let room = right.saturating_sub(area.x + 1);
+        retro::put_str(
+            buf,
+            area.x,
+            area.y,
+            &format!(" ▣ CourierQR — {who}"),
+            bold,
+            room,
+        );
+    }
+
+    /// Win9x tabs: each is a little two-row box; the current one is raised
+    /// in the face colour, the others sit back on a lighter strip.
+    fn draw_tabs(&mut self, f: &mut Frame, area: Rect) {
+        self.tab_hits.clear();
+        let p = retro::t();
+        let buf = f.buffer_mut();
+        retro::fill(buf, area, p.face);
+        let mut x = area.x + 1;
+        for (i, t) in Tab::ALL.iter().enumerate() {
+            let label = format!(" {} {} ", i + 1, t.label());
+            let w = label.chars().count() as u16 + 2;
+            if x + w > area.right() {
+                break;
+            }
+            let sel = *t == self.tab;
+            let r = Rect::new(x, area.y, w, area.height.min(2));
+            let (edge_l, edge_r, bg) = if sel {
+                (p.hi, p.shadow, p.face)
+            } else {
+                (p.shadow, p.shadow, p.light)
+            };
+            let line = |n: u16| "─".repeat(n as usize);
+            retro::put_str(buf, x, area.y, "┌", Style::new().fg(edge_l), 1);
+            retro::put_str(buf, x + 1, area.y, &line(w - 2), Style::new().fg(edge_l), w);
+            retro::put_str(buf, x + w - 1, area.y, "┐", Style::new().fg(edge_r), 1);
+            if area.height > 1 {
+                let y = area.y + 1;
+                retro::put_str(buf, x, y, "│", Style::new().fg(edge_l), 1);
+                let num = Style::new()
+                    .fg(if sel { p.accent } else { p.dim })
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD);
+                let name = if sel {
+                    Style::new().fg(p.text).bg(bg).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::new().fg(p.dim).bg(bg)
+                };
+                let after = retro::put_str(buf, x + 1, y, &format!(" {} ", i + 1), num, w);
+                retro::put_str(buf, after, y, &format!("{} ", t.label()), name, w);
+                retro::put_str(buf, x + w - 1, y, "│", Style::new().fg(edge_r), 1);
+            }
+            self.tab_hits.push((r, *t));
+            x += w;
+        }
+    }
+
+    /// Key hints on a lighter strip, then a Win9x status bar: sunken cells
+    /// for the last message, key state, paired devices and the theme.
+    fn draw_footer(&self, f: &mut Frame, area: Rect) {
+        let [keys, bar] =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
         let mut hints: Vec<(&str, &str)> = match self.tab {
             Tab::Receive => receive::hints(self),
             Tab::Devices => devices::hints(self),
@@ -1161,13 +1310,56 @@ impl App {
         for (k, what) in hints {
             spans.push(Span::styled(
                 k.to_owned(),
-                Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::new().fg(ACCENT()).add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(format!(" {what}   "), Style::new().fg(MUTED)));
+            spans.push(Span::styled(
+                format!(" {what}   "),
+                Style::new().fg(MUTED()),
+            ));
         }
         f.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::new().bg(PANEL)),
+            Paragraph::new(Line::from(spans)).style(Style::new().bg(PANEL())),
             keys,
+        );
+
+        let p = retro::t();
+        let paired = pair::load().map(|d| d.len()).unwrap_or(0);
+        let (msg, msg_fg) = match &self.toast {
+            Some((t, err, _)) => (t.clone(), if *err { p.error } else { p.accent }),
+            None => ("Ready".to_owned(), p.text),
+        };
+        let keys_state = if self.own_key.is_some() {
+            "● keys open"
+        } else {
+            "○ no keys"
+        };
+        let cells = [
+            keys_state.to_owned(),
+            format!("{paired} paired"),
+            p.name.to_owned(),
+        ];
+        let buf = f.buffer_mut();
+        retro::fill(buf, bar, p.face);
+        let cell_style = Style::new().fg(p.text).bg(p.field);
+        let mut right = bar.right().saturating_sub(2);
+        retro::put_str(buf, right, bar.y, "◢", Style::new().fg(p.hi).bg(p.face), 1);
+        for c in cells.iter().rev() {
+            let w = c.chars().count() as u16 + 2;
+            if right < bar.x + w + 20 {
+                break;
+            }
+            right -= w + 1;
+            retro::put_str(buf, right, bar.y, &format!(" {c} "), cell_style, w);
+        }
+        let msg_w = right.saturating_sub(bar.x + 1);
+        retro::fill(buf, Rect::new(bar.x, bar.y, msg_w, 1), p.field);
+        retro::put_str(
+            buf,
+            bar.x,
+            bar.y,
+            &format!(" {msg}"),
+            Style::new().fg(msg_fg).bg(p.field),
+            msg_w,
         );
     }
 
@@ -1177,16 +1369,16 @@ impl App {
         let h = (COMMANDS.len() as u16 + 4).min(area.height.saturating_sub(2));
         let r = Rect::new(area.x + (area.width - w) / 2, area.y + 3, w, h);
         f.render_widget(Clear, r);
-        let block = panel("command palette").border_style(Style::new().fg(ACCENT));
+        let block = panel("command palette").border_style(Style::new().fg(ACCENT()));
         let inner = block.inner(r);
         f.render_widget(block, r);
         let [q, list] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
         f.render_widget(
             Paragraph::new(vec![
                 Line::from(vec![
-                    Span::styled("› ", Style::new().fg(ACCENT)),
-                    Span::styled(p.query.clone(), Style::new().fg(TEXT)),
-                    Span::styled("▏", Style::new().fg(ACCENT)),
+                    Span::styled("› ", Style::new().fg(ACCENT())),
+                    Span::styled(p.query.clone(), Style::new().fg(TEXT())),
+                    Span::styled("▏", Style::new().fg(ACCENT())),
                 ]),
                 Line::raw(""),
             ]),
@@ -1198,9 +1390,9 @@ impl App {
             .enumerate()
             .map(|(i, (_, label))| {
                 let style = if i == p.selected {
-                    Style::new().fg(BG).bg(ACCENT)
+                    Style::new().fg(BG()).bg(ACCENT())
                 } else {
-                    Style::new().fg(TEXT)
+                    Style::new().fg(TEXT())
                 };
                 ListItem::new(Span::styled(format!(" {label}"), style))
             })
