@@ -77,11 +77,6 @@ pub fn load() -> Result<Vec<Envelope>> {
     Ok(found.into_iter().map(|(_, e)| e).collect())
 }
 
-/// Ids currently stored (cheap check for "did the feed change?").
-pub fn ids() -> Result<Vec<String>> {
-    Ok(load()?.iter().map(Envelope::id_hex).collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
