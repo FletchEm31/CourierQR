@@ -205,7 +205,7 @@ fn every_screen_renders_and_works() {
     );
     let t = text(&render(&mut app));
     assert!(t.contains("Press Enter to start the camera"));
-    assert!(t.contains("this computer"));
+    assert!(t.contains("this device"));
 
     // ---- 2. scanning a transfer sealed to this computer, mid-way
     app.receive.phase = Phase::Scanning;

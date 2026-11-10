@@ -41,6 +41,8 @@ pub(crate) mod theme {
     pub const ACCENT: Color = Color::Rgb(61, 220, 151);
     pub const WARN: Color = Color::Rgb(255, 184, 77);
     pub const ERROR: Color = Color::Rgb(255, 107, 107);
+    /// Drop shadow under the header banner.
+    pub const SHADOW: Color = Color::Rgb(52, 60, 72);
 }
 use theme::*;
 
@@ -1034,19 +1036,28 @@ impl App {
         let mut lines: Vec<Line> = vec![Line::raw(""); top_pad];
         for (row, l) in logo.lines.iter().enumerate() {
             let muted = logo.muted_rows.contains(&row);
+            let banner = logo.banner_rows.contains(&row);
             let spans: Vec<Span> = l
                 .chars()
                 .enumerate()
                 .map(|(i, ch)| {
                     let accent = i >= logo.accent_from || i < logo.accent_until;
-                    let fg = if accent {
-                        ACCENT
+                    let style = if accent {
+                        Style::new().fg(ACCENT)
+                    } else if banner {
+                        match ch {
+                            '▒' => Style::new().fg(SHADOW),
+                            '═' | '║' | '╔' | '╗' | '╚' | '╝' => {
+                                Style::new().fg(ACCENT)
+                            }
+                            _ => Style::new().fg(TEXT).add_modifier(Modifier::BOLD),
+                        }
                     } else if muted {
-                        MUTED
+                        Style::new().fg(MUTED)
                     } else {
-                        TEXT
+                        Style::new().fg(TEXT)
                     };
-                    Span::styled(ch.to_string(), Style::new().fg(fg))
+                    Span::styled(ch.to_string(), style)
                 })
                 .collect();
             lines.push(Line::from(spans));
@@ -1062,13 +1073,13 @@ impl App {
         let (cam_dot, cam) = self.receive.source_label();
         let kv = |k: &str, v: Span<'static>| {
             Line::from(vec![
-                Span::styled(format!("{k:<15}"), Style::new().fg(MUTED)),
+                Span::styled(format!("{k:<12}"), Style::new().fg(MUTED)),
                 v,
             ])
         };
         let status = vec![
             kv(
-                "this computer",
+                "this device",
                 Span::styled(
                     fp.to_owned(),
                     Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
@@ -1090,10 +1101,16 @@ impl App {
                 Span::styled(shorten_home(&self.out), Style::new().fg(TEXT)),
             ),
         ];
-        let pad = (right.height as usize).saturating_sub(status.len()) / 2;
-        let mut out = vec![Line::raw(""); pad];
-        out.extend(status);
-        f.render_widget(Paragraph::new(out).style(Style::new().bg(BG)), right);
+        // Top-right corner, flush right: size the block to its widest line
+        // so labels and values stay in columns.
+        let w = (status.iter().map(Line::width).max().unwrap_or(0) as u16 + 1).min(right.width);
+        let corner = Rect {
+            x: right.x + right.width - w,
+            y: right.y,
+            width: w,
+            height: (status.len() as u16).min(right.height),
+        };
+        f.render_widget(Paragraph::new(status).style(Style::new().bg(BG)), corner);
     }
 
     fn draw_tabs(&mut self, f: &mut Frame, area: Rect) {

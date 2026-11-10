@@ -18,6 +18,9 @@ pub struct Logo {
     pub accent_until: usize,
     /// Rows drawn muted (a tagline), left of `accent_from`.
     pub muted_rows: &'static [usize],
+    /// Rows forming the boxed tagline banner, left of `accent_from`: frame
+    /// muted, text bold and bright, `▒` drawn as a dark drop shadow.
+    pub banner_rows: &'static [usize],
 }
 
 impl Logo {
@@ -33,10 +36,11 @@ impl Logo {
     }
 }
 
-/// The line under COURIER (heavy rule). Alternatives that fit (53 columns):
-/// "encrypted over light", "air-gapped · end-to-end encrypted",
-/// "your keys stay home · only light crosses",
-/// "post-quantum encrypted · carried by light".
+/// The banner under COURIER: a double-line box (53 columns) with a drop
+/// shadow, like the letters above it. Other taglines that fit (≤51):
+/// "ENCRYPTED OVER LIGHT", "AIR-GAPPED · END-TO-END ENCRYPTED",
+/// "YOUR KEYS STAY HOME · ONLY LIGHT CROSSES",
+/// "POST-QUANTUM ENCRYPTED · CARRIED BY LIGHT".
 pub const LOGOS: &[Logo] = &[
     Logo {
         name: "Courier QR",
@@ -48,16 +52,17 @@ pub const LOGOS: &[Logo] = &[
             r#"██║     ██║   ██║██║   ██║██╔══██╗██║██╔══╝  ██╔══██╗  ████║       ████║ ████║     ████║"#,
             r#"╚██████╗╚██████╔╝╚██████╔╝██║  ██║██║███████╗██║  ██║  ████║       ████║ ████████████╔═╝"#,
             r#" ╚═════╝ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝╚══════╝╚═╝  ╚═╝  ████║       ████║ ████████████║"#,
-            r#"                                                       ████║       ████║ ████╔═════████╗"#,
-            r#"━━━━━━ no network · no accounts · no metadata ━━━━━━━  ████║ ████╗ ████║ ████║     ████║"#,
-            r#"                                                       ╚═████████████╔═╝ ████║     ████║"#,
-            r#"                                                         ████████████║   ████║     ████║"#,
+            r#"╔═══════════════════════════════════════════════════╗  ████║       ████║ ████╔═════████╗"#,
+            r#"║   NO NETWORK · ANONYMOUS ACCOUNTS · NO METADATA   ║▒ ████║ ████╗ ████║ ████║     ████║"#,
+            r#"╚═══════════════════════════════════════════════════╝▒ ╚═████████████╔═╝ ████║     ████║"#,
+            r#" ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒   ████████████║   ████║     ████║"#,
             r#"                                                         ╚═════████══╝   ╚═══╝     ╚═══╝"#,
             r#"                                                               ╚═══╝"#,
         ],
         accent_from: 55,
         accent_until: 0,
-        muted_rows: &[7],
+        muted_rows: &[],
+        banner_rows: &[6, 7, 8, 9],
     },
     Logo {
         name: "Shadow",
@@ -73,6 +78,7 @@ pub const LOGOS: &[Logo] = &[
         accent_from: 52,
         accent_until: 0,
         muted_rows: &[],
+        banner_rows: &[],
     },
     Logo {
         name: "Finder",
@@ -86,6 +92,7 @@ pub const LOGOS: &[Logo] = &[
         accent_from: 27,
         accent_until: 7,
         muted_rows: &[3],
+        banner_rows: &[],
     },
     Logo {
         name: "Minimal",
@@ -94,6 +101,7 @@ pub const LOGOS: &[Logo] = &[
         accent_from: 9999,
         muted_rows: &[],
         accent_until: 1,
+        banner_rows: &[],
     },
 ];
 
